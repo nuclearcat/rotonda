@@ -151,6 +151,10 @@ impl Api {
             let mut app = self.router.clone().with_state(
                 self.cloned_api_state()
             );
+            #[cfg(feature = "http-api-gzip")]
+            {
+                app = app.layer(CompressionLayer::new());
+            }
 
             #[cfg(feature = "http-api-gzip")]
             {

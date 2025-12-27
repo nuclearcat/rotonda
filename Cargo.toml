@@ -76,6 +76,7 @@ uuid               = { version = "1.18", features = ["v4", "fast-rng"] }
 sha2               = "0.10"
 csv                = "1.3"
 bzip2              = "0.6"
+tokio-stream       = "0.1.17"
 rpki               = { version = "0.19.1", features = ["crypto", "rtr"] }
 futures-util       = "0.3"
 micromap           = "0.1.0"

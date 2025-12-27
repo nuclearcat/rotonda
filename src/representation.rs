@@ -45,8 +45,8 @@ pub struct Cli<W: std::io::Write>(pub W);
 macro_rules! genoutput_json {
     ($type:ty $(, $val:tt )? ) => {
         impl<W: std::io::Write> GenOutput<Json<W>> for $type {
-            fn write(&self, target: &mut Json<W>) -> Result<(), $crate::representation::OutputError> {
-                let _ = serde_json::to_writer(&mut target.0, &self$(.$val)?).unwrap();
+            fn write(&self, target: &mut Json<W>) -> Result<(), crate::representation::OutputError> {
+                serde_json::to_writer(&mut target.0, &self$(.$val)?)?;
                 Ok(())
             }
             fn write_seq_start(target: &mut Json<W>) -> Result<(), $crate::representation::OutputError> {
@@ -73,5 +73,18 @@ pub struct OutputError {
 
 #[allow(dead_code)]
 enum OutputErrorType {
+    Io(std::io::Error),
     Other,
+}
+
+impl From<serde_json::Error> for OutputError {
+    fn from(err: serde_json::Error) -> Self {
+        Self {
+            error_type: if err.is_io() {
+                OutputErrorType::Io(err.into())
+            } else {
+                OutputErrorType::Other
+            },
+        }
+    }
 }

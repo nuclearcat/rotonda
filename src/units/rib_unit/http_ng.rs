@@ -51,7 +51,7 @@ enum SupportedAfiSafi {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
 pub struct QueryFilter {
-    
+
     #[serde(default)]
     #[serde_as(as = "StringWithSeparator::<CommaSeparator, Include>")]
     pub include: Vec<Include>,
@@ -60,18 +60,18 @@ pub struct QueryFilter {
     pub ingress_id: Option<IngressId>,
 
     #[serde(rename = "filter[originAsn]")]
-    pub origin_asn: Option<Asn>, 
+    pub origin_asn: Option<Asn>,
 
     #[serde(rename = "filter[otc]")]
-    pub otc: Option<Asn>, 
+    pub otc: Option<Asn>,
 
     #[serde(rename = "filter[community]")]
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    pub community: Option<StandardCommunity>, 
+    pub community: Option<StandardCommunity>,
 
     #[serde(rename = "filter[largeCommunity]")]
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    pub large_community: Option<LargeCommunity>, 
+    pub large_community: Option<LargeCommunity>,
 
     #[serde(rename = "filter[ribType]")]
     pub rib_type: Option<PeerRibType>,
@@ -86,7 +86,7 @@ pub struct QueryFilter {
     #[serde(rename = "filter[peerAddress]")]
     pub peer_addr: Option<IpAddr>,
 
-    // TODO: RouteDistinguisher, 
+    // TODO: RouteDistinguisher,
 
     // content parameter (defaulting to 'all') to request only the nlri without path attributes, or
     // perhaps only specific path attributes?
@@ -95,7 +95,7 @@ pub struct QueryFilter {
     // json:api describes 'fields[]', e.g.:
     // ?include=author&fields[articles]=title,body&fields[people]=name
     //
-    // We could go for e.g. fields[pathAttributes]=asPath,otc 
+    // We could go for e.g. fields[pathAttributes]=asPath,otc
     //
     // Then to alter representation, i.e. offer 'plain' communities and the exploded human readable
     // representation from the old API, .. what do we do/

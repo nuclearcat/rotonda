@@ -63,6 +63,9 @@ bytes              = { version = "1.11.1" }
 hashbrown          = "0.16" # will go if we remove custom alloc
 hex-slice          = "0.1" # might go after refactor of bmp
 inetnum            = { workspace = true }
+indoc              = "2.0"
+layout-rs          = { version = "0.1" }
+libc               = "0.2"
 mqtt               = { version = "0.23.0", package = "rumqttc", default-features = false }
 memmap2            = "0.9.9"
 non-empty-vec      = { version = "0.2", features = ["serde"]}

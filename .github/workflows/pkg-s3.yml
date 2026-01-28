@@ -41,7 +41,7 @@ jobs:
       - name: Install cargo-deb
         run: |
           . "$HOME/.cargo/env"
-          cargo install cargo-deb
+          cargo install cargo-deb --locked
 
       - name: Build package
         run: |
@@ -76,7 +76,7 @@ jobs:
       - name: Install cargo-deb
         run: |
           . "$HOME/.cargo/env"
-          cargo install cargo-deb
+          cargo install cargo-deb --locked
 
       - name: Build package
         run: |
@@ -111,7 +111,7 @@ jobs:
       - name: Install cargo-deb
         run: |
           . "$HOME/.cargo/env"
-          cargo install cargo-deb
+          cargo install cargo-deb --locked
 
       - name: Build package
         run: |

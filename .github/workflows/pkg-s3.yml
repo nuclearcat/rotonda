@@ -159,6 +159,7 @@ jobs:
             --codename jammy \
             --component main \
             --arch amd64 \
+            --visibility private \
             $ENDPOINT_FLAG \
             packages/deb-jammy/*.deb
 
@@ -167,6 +168,7 @@ jobs:
             --codename noble \
             --component main \
             --arch amd64 \
+            --visibility private \
             $ENDPOINT_FLAG \
             packages/deb-noble/*.deb
 
@@ -175,5 +177,6 @@ jobs:
             --codename trixie \
             --component main \
             --arch amd64 \
+            --visibility private \
             $ENDPOINT_FLAG \
             packages/deb-trixie/*.deb

@@ -43,6 +43,17 @@ jobs:
           . "$HOME/.cargo/env"
           cargo install cargo-deb --locked
 
+      - name: Generate changelog
+        run: |
+          mkdir -p target/debian
+          cat > target/debian/changelog << EOF
+          rotonda (${{ needs.prepare.outputs.version }}) unstable; urgency=medium
+
+            * Release ${{ needs.prepare.outputs.version }}
+
+           -- Package Builder <builder@localhost>  $(date -R)
+          EOF
+
       - name: Build package
         run: |
           . "$HOME/.cargo/env"
@@ -78,6 +89,17 @@ jobs:
           . "$HOME/.cargo/env"
           cargo install cargo-deb --locked
 
+      - name: Generate changelog
+        run: |
+          mkdir -p target/debian
+          cat > target/debian/changelog << EOF
+          rotonda (${{ needs.prepare.outputs.version }}) unstable; urgency=medium
+
+            * Release ${{ needs.prepare.outputs.version }}
+
+           -- Package Builder <builder@localhost>  $(date -R)
+          EOF
+
       - name: Build package
         run: |
           . "$HOME/.cargo/env"
@@ -112,6 +134,17 @@ jobs:
         run: |
           . "$HOME/.cargo/env"
           cargo install cargo-deb --locked
+
+      - name: Generate changelog
+        run: |
+          mkdir -p target/debian
+          cat > target/debian/changelog << EOF
+          rotonda (${{ needs.prepare.outputs.version }}) unstable; urgency=medium
+
+            * Release ${{ needs.prepare.outputs.version }}
+
+           -- Package Builder <builder@localhost>  $(date -R)
+          EOF
 
       - name: Build package
         run: |

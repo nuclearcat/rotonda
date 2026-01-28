@@ -1,0 +1,197 @@
+name: Build and Upload DEBs to S3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/' || echo "0.0.0")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}"
+
+  build-jammy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Customize package metadata
+        run: |
+          # Change package name to rotonda-cstm
+          sed -i 's/^name = "rotonda"$/name = "rotonda-cstm"/' Cargo.toml
+          # Add custom fork notice to description
+          sed -i 's/Roll your own BGP/[CUSTOM FORK BUILD] Roll your own BGP/' Cargo.toml
+          # Add -cstm suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-cstm)
+          sed -i 's/^version = "\([^"]*\)"$/version = "\1-cstm"/' Cargo.toml
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential curl pkg-config libssl-dev
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-deb
+
+      - name: Build package
+        run: |
+          . "$HOME/.cargo/env"
+          cargo deb --variant ubuntu-jammy
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-jammy
+          path: target/debian/*.deb
+
+  build-noble:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Customize package metadata
+        run: |
+          # Change package name to rotonda-cstm
+          sed -i 's/^name = "rotonda"$/name = "rotonda-cstm"/' Cargo.toml
+          # Add custom fork notice to description
+          sed -i 's/Roll your own BGP/[CUSTOM FORK BUILD] Roll your own BGP/' Cargo.toml
+          # Add -cstm suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-cstm)
+          sed -i 's/^version = "\([^"]*\)"$/version = "\1-cstm"/' Cargo.toml
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential curl pkg-config libssl-dev
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-deb
+
+      - name: Build package
+        run: |
+          . "$HOME/.cargo/env"
+          cargo deb
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-noble
+          path: target/debian/*.deb
+
+  build-trixie:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Customize package metadata
+        run: |
+          # Change package name to rotonda-cstm
+          sed -i 's/^name = "rotonda"$/name = "rotonda-cstm"/' Cargo.toml
+          # Add custom fork notice to description
+          sed -i 's/Roll your own BGP/[CUSTOM FORK BUILD] Roll your own BGP/' Cargo.toml
+          # Add -cstm suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-cstm)
+          sed -i 's/^version = "\([^"]*\)"$/version = "\1-cstm"/' Cargo.toml
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential curl pkg-config libssl-dev
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-deb
+
+      - name: Build package
+        run: |
+          . "$HOME/.cargo/env"
+          cargo deb
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-trixie
+          path: target/debian/*.deb
+
+  upload:
+    needs: [build-jammy, build-noble, build-trixie]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install deb-s3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev
+          sudo gem install deb-s3
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: packages
+
+      - name: List packages
+        run: find packages -name "*.deb" -type f
+
+      - name: Upload to S3 repository
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          deb-s3 upload \
+            --bucket ${{ secrets.DEB_S3_BUCKET }} \
+            --codename jammy \
+            --component main \
+            --arch amd64 \
+            packages/deb-jammy/*.deb
+
+          deb-s3 upload \
+            --bucket ${{ secrets.DEB_S3_BUCKET }} \
+            --codename noble \
+            --component main \
+            --arch amd64 \
+            packages/deb-noble/*.deb
+
+          deb-s3 upload \
+            --bucket ${{ secrets.DEB_S3_BUCKET }} \
+            --codename trixie \
+            --component main \
+            --arch amd64 \
+            packages/deb-trixie/*.deb

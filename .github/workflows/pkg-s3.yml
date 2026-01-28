@@ -30,12 +30,14 @@ jobs:
 
       - name: Customize package metadata
         run: |
-          # Change package name to rotonda-cstm
-          sed -i 's/^name = "rotonda"$/name = "rotonda-cstm"/' Cargo.toml
+          # Change package name to rotonda-n
+          sed -i 's/^name = "rotonda"$/name = "rotonda-n"/' Cargo.toml
+          # Update default-run to match new package name
+          sed -i 's/^default-run = "rotonda"$/default-run = "rotonda-n"/' Cargo.toml
           # Add custom fork notice to description
           sed -i 's/Roll your own BGP/[CUSTOM FORK BUILD] Roll your own BGP/' Cargo.toml
-          # Add -cstm suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-cstm)
-          sed -i 's/^version = "\([^"]*\)"$/version = "\1-cstm"/' Cargo.toml
+          # Add -n suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-n)
+          sed -i 's/^version = "\([^"]*\)"$/version = "\1-n"/' Cargo.toml
 
       - name: Install build dependencies
         run: |
@@ -74,12 +76,14 @@ jobs:
 
       - name: Customize package metadata
         run: |
-          # Change package name to rotonda-cstm
-          sed -i 's/^name = "rotonda"$/name = "rotonda-cstm"/' Cargo.toml
+          # Change package name to rotonda-n
+          sed -i 's/^name = "rotonda"$/name = "rotonda-n"/' Cargo.toml
+          # Update default-run to match new package name
+          sed -i 's/^default-run = "rotonda"$/default-run = "rotonda-n"/' Cargo.toml
           # Add custom fork notice to description
           sed -i 's/Roll your own BGP/[CUSTOM FORK BUILD] Roll your own BGP/' Cargo.toml
-          # Add -cstm suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-cstm)
-          sed -i 's/^version = "\([^"]*\)"$/version = "\1-cstm"/' Cargo.toml
+          # Add -n suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-n)
+          sed -i 's/^version = "\([^"]*\)"$/version = "\1-n"/' Cargo.toml
 
       - name: Install build dependencies
         run: |
@@ -118,12 +122,14 @@ jobs:
 
       - name: Customize package metadata
         run: |
-          # Change package name to rotonda-cstm
-          sed -i 's/^name = "rotonda"$/name = "rotonda-cstm"/' Cargo.toml
+          # Change package name to rotonda-n
+          sed -i 's/^name = "rotonda"$/name = "rotonda-n"/' Cargo.toml
+          # Update default-run to match new package name
+          sed -i 's/^default-run = "rotonda"$/default-run = "rotonda-n"/' Cargo.toml
           # Add custom fork notice to description
           sed -i 's/Roll your own BGP/[CUSTOM FORK BUILD] Roll your own BGP/' Cargo.toml
-          # Add -cstm suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-cstm)
-          sed -i 's/^version = "\([^"]*\)"$/version = "\1-cstm"/' Cargo.toml
+          # Add -n suffix to version (e.g., 0.5.1-dev -> 0.5.1-dev-n)
+          sed -i 's/^version = "\([^"]*\)"$/version = "\1-n"/' Cargo.toml
 
       - name: Install build dependencies
         run: |

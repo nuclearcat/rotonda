@@ -175,11 +175,18 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
+          # Set endpoint flag for S3-compatible storage (empty for AWS S3)
+          ENDPOINT_FLAG=""
+          if [ -n "${{ secrets.S3_ENDPOINT }}" ]; then
+            ENDPOINT_FLAG="--s3-region=${{ secrets.AWS_REGION }} --endpoint=${{ secrets.S3_ENDPOINT }}"
+          fi
+
           deb-s3 upload \
             --bucket ${{ secrets.DEB_S3_BUCKET }} \
             --codename jammy \
             --component main \
             --arch amd64 \
+            $ENDPOINT_FLAG \
             packages/deb-jammy/*.deb
 
           deb-s3 upload \
@@ -187,6 +194,7 @@ jobs:
             --codename noble \
             --component main \
             --arch amd64 \
+            $ENDPOINT_FLAG \
             packages/deb-noble/*.deb
 
           deb-s3 upload \
@@ -194,4 +202,5 @@ jobs:
             --codename trixie \
             --component main \
             --arch amd64 \
+            $ENDPOINT_FLAG \
             packages/deb-trixie/*.deb

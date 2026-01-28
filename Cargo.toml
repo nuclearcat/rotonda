@@ -141,22 +141,22 @@ copyright = "Copyright (c) 2024, NLnet Labs. All rights reserved."
 conf-files = [
     "/etc/rotonda/rotonda.conf",
 ]
-systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false, usr-merge = true } # usr-merge is needed for Bookworm/Noble and later
+systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false }
 
 [package.metadata.deb.variants.debian-buster]
-systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false, usr-merge = false }
+systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false }
 
 [package.metadata.deb.variants.debian-bullseye]
-systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false, usr-merge = false }
+systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false }
 
 [package.metadata.deb.variants.ubuntu-bionic]
-systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false, usr-merge = false }
+systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false }
 
 [package.metadata.deb.variants.ubuntu-focal]
-systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false, usr-merge = false }
+systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false }
 
 [package.metadata.deb.variants.ubuntu-jammy]
-systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false, usr-merge = false }
+systemd-units = { unit-name = "rotonda", unit-scripts = "pkg/common", enable = false }
 
 
 

@@ -15,6 +15,8 @@ Released yyyy-mm-dd.
 * HTTP API responses now include the `NextHop` part of the `MP_REACH_NLRI` path
   attribute.
 
+* HTTP API supports gzip compressed responses.
+
 
 ### Bug fixes
 
@@ -33,8 +35,8 @@ Released yyyy-mm-dd.
 
 ### Acknowledgements
 
-We would like to very much thank Rein Fernhout (LevitatingBusinessMan) for
-their (ongoing) input and support in various ways.
+We would like to very much thank Rein Fernhout (LevitatingBusinessMan) and
+Denys Fedoryshchenko for their (ongoing) input and support in various ways.
  
 ## 0.5.0 'Mosaïque Public'
 

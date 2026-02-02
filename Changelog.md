@@ -15,7 +15,8 @@ Released yyyy-mm-dd.
 * HTTP API responses now include the `NextHop` part of the `MP_REACH_NLRI` path
   attribute.
 
-* HTTP API supports gzip compressed responses.
+* HTTP API supports gzip compressed responses, and streaming/chunking of
+  responses.
 
 
 ### Bug fixes

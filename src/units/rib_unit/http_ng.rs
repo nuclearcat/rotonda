@@ -133,12 +133,12 @@ pub enum Include {
 
 const STREAM_CHUNK_SIZE: usize = 256 * 1024;
 
-struct ChannelWriter {
+struct StreamResponseWriter {
     sender: mpsc::Sender<Result<Bytes, io::Error>>,
     buffer: Vec<u8>,
 }
 
-impl ChannelWriter {
+impl StreamResponseWriter {
     fn new(sender: mpsc::Sender<Result<Bytes, io::Error>>) -> Self {
         Self {
             sender,
@@ -158,7 +158,7 @@ impl ChannelWriter {
     }
 }
 
-impl io::Write for ChannelWriter {
+impl io::Write for StreamResponseWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.buffer.extend_from_slice(buf);
         if self.buffer.len() >= STREAM_CHUNK_SIZE {
@@ -179,7 +179,7 @@ fn stream_search_result(
     let stream = ReceiverStream::new(rx);
 
     tokio::task::spawn_blocking(move || {
-        let mut writer = ChannelWriter::new(tx);
+        let mut writer = StreamResponseWriter::new(tx);
         let _ = search_result.write(&mut Json(&mut writer));
         let _ = writer.flush();
     });

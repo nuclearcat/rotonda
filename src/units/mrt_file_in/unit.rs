@@ -11,7 +11,6 @@ use flate2::read::GzDecoder;
 use futures::future::{select, Either};
 use futures::{pin_mut, FutureExt, TryFutureExt};
 use log::{debug, error, info, warn};
-use rand::seq::SliceRandom;
 use rotonda_store::prefix_record::RouteStatus;
 use routecore::bgp::fsm::state_machine::State;
 use routecore::bgp::message::{Message as BgpMsg, PduParseInfo};
@@ -28,15 +27,13 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use crate::config::ConfigPath;
-use crate::roto_runtime::types::{explode_announcements, explode_withdrawals, FreshRouteContext, MrtContext, Provenance, RouteContext};
+use crate::roto_runtime::types::{explode_announcements, explode_withdrawals};
 use crate::common::unit::UnitActivity;
 use crate::comms::{GateStatus, Terminated};
 use crate::ingress::{self, IngressId, IngressInfo};
 use crate::manager::{Component, WaitPoint};
 use crate::payload::{Payload, RotondaPaMap, RotondaRoute, Update};
 use crate::units::{Gate, Unit};
-
-use super::api;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct MrtFileIn {
@@ -67,7 +64,7 @@ impl Iterator for PathsIterator<'_> {
     }
 }
 impl OneOrManyPaths {
-    pub fn iter(&self) -> PathsIterator {
+    pub fn iter(&self) -> PathsIterator<'_> {
         match self {
             OneOrManyPaths::One(p) => {
                 PathsIterator::One(Some(p.clone().into()))
@@ -77,6 +74,7 @@ impl OneOrManyPaths {
     }
 }
 
+#[allow(dead_code)]
 pub struct MrtInRunner {
     config: MrtFileIn,
     gate: Gate,
@@ -97,7 +95,7 @@ pub type QueueEntry = (
 impl MrtFileIn {
     pub async fn run(
         self,
-        mut component: Component,
+        component: Component,
         gate: Gate,
         mut waitpoint: WaitPoint,
     ) -> Result<(), crate::comms::Terminated> {
@@ -119,20 +117,6 @@ impl MrtFileIn {
         for f in self.filename.iter() {
             let _ = queue_tx.send((f, None)).await;
         }
-
-        let endpoint_path = Arc::new(format!("/mrt/{}/", component.name()));
-        let api_processor = Arc::new(
-            api::Processor::new(
-                endpoint_path.clone(),
-                self.update_path.clone().map(Into::into),
-                queue_tx.clone(),
-                )
-            );
-
-        component.register_http_resource(
-            api_processor.clone(),
-            &endpoint_path,
-        );
 
         MrtInRunner::new(self, gate, ingresses, parent_id, queue_tx).run(queue_rx).await
     }
@@ -242,39 +226,24 @@ impl MrtInRunner {
                     new_id
                 };
 
-                let provenance = Provenance::for_bgp(
-                    ingress_id,
-                    msg.peer_addr(),
-                    msg.peer_asn(),
-                );
-
-                // or do we need a RouteContext::Fresh here?
-                let context = MrtContext {
-                    status: RouteStatus::Active,
-                    provenance
-                };
-
                 payloads.extend(
                     rr_reach.into_iter().map(|rr|
                         Payload::with_received(
                             rr,
-                            RouteContext::Mrt(context.clone()),
                             None,
                             received,
+                            ingress_id,
+                            RouteStatus::Active,
                         )
                     ));
-
-                let context = MrtContext {
-                    status: RouteStatus::Withdrawn,
-                    ..context
-                };
 
                 payloads.extend(rr_unreach.into_iter().map(|rr|
                         Payload::with_received(
                             rr,
-                            RouteContext::Mrt(context.clone()),
                             None,
-                            received
+                            received,
+                            ingress_id,
+                            RouteStatus::Withdrawn,
                         )
                 ));
                 let update = payloads.into();
@@ -368,7 +337,7 @@ impl MrtInRunner {
 
 
             let rib_entries = mrt_file.rib_entries()?;
-            for (afisafi, peer_id, peer_entry, prefix, raw_attr) in rib_entries {
+            for (afisafi, peer_id, _peer_entry, prefix, raw_attr) in rib_entries {
                 let rr = match afisafi {
                     AfiSafiType::Ipv4Unicast => {
                         RotondaRoute::Ipv4Unicast(
@@ -398,13 +367,8 @@ impl MrtInRunner {
                         continue
                     }
                 };
-                let provenance = Provenance::for_bgp(
-                    ingress_map[usize::from(peer_id)],
-                    peer_entry.addr,
-                    peer_entry.asn,
-                );
-                let ctx = RouteContext::for_mrt_dump(provenance);
-                let update = Update::Single(Payload::new(rr, ctx, None));
+                let ingress_id = ingress_map[usize::from(peer_id)];
+                let update = Update::Single(Payload::new(rr, None, ingress_id, RouteStatus::Active));
 
                 gate.update_data(update).await;
                 
@@ -522,7 +486,6 @@ impl MrtInRunner {
                         let mut hasher = Sha256::new();
                         let mut file = std::fs::File::open(&p).unwrap();
 
-                        let t0 = Instant::now();
                         let _bytes_written = std::io::copy(&mut file, &mut hasher).unwrap();
                         let hash_bytes = hasher.finalize();
                         let hash_str = format!("{:x}", hash_bytes);
@@ -574,7 +537,7 @@ impl MrtInRunner {
                         GateStatus::Reconfiguring {
                             new_config:
                                 Unit::MrtFileIn(MrtFileIn {
-                                    filename: new_filename,
+                                    filename: _new_filename,
                                     ..
                                 }),
                         } => {

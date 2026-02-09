@@ -1,9 +1,6 @@
 use crate::common::status_reporter::AnyStatusReporter;
-use crate::roto_runtime::types::{explode_announcements, explode_withdrawals, FreshRouteContext, Provenance, RouteContext};
-use crate::tests::util::internal::{
-    get_testable_metrics_snapshot, MOCK_ROUTER_ID,
-};
-use crate::units::RibType;
+use crate::roto_runtime::types::{explode_announcements, explode_withdrawals};
+use crate::tests::util::internal::get_testable_metrics_snapshot;
 use crate::{
     bgp::encode::{mk_bgp_update, Announcements, Prefixes},
     payload::{Payload, Update},
@@ -53,7 +50,7 @@ async fn process_non_route_update() {
 
 #[tokio::test]
 async fn process_update_single_route() {
-    let (runner, _) = RibUnitRunner::mock("", RibType::Physical).unwrap();
+    let (runner, _) = RibUnitRunner::mock("").unwrap();
 
     // Given a BGP update containing a single route announcement
     let prefix = Prefix::from_str("127.0.0.1/32").unwrap();
@@ -73,7 +70,7 @@ async fn process_update_single_route() {
 #[tokio::test]
 #[ignore = "this is really different after refactoring of the store"]
 async fn process_update_withdraw_unannounced_route() {
-    let (runner, _) = RibUnitRunner::mock("", RibType::Physical).unwrap();
+    let (runner, _) = RibUnitRunner::mock("").unwrap();
 
     // Given a BGP update containing a single route withdrawal
     let prefix = Prefix::from_str("127.0.0.1/32").unwrap();
@@ -103,7 +100,7 @@ async fn process_update_withdraw_unannounced_route() {
 
 #[tokio::test]
 async fn process_update_same_route_twice() {
-    let (runner, _) = RibUnitRunner::mock("", RibType::Physical).unwrap();
+    let (runner, _) = RibUnitRunner::mock("").unwrap();
 
     // Given a BGP update containing a single route announcement
     let prefix = Prefix::from_str("127.0.0.1/32").unwrap();
@@ -144,10 +141,7 @@ async fn process_update_same_route_twice() {
 #[tokio::test]
 async fn process_update_equivalent_route_twice() {
     /*
-    let (runner, _) = RibUnitRunner::mock(
-        "",
-        RibType::Physical,
-    );
+    let (runner, _) = RibUnitRunner::mock("");
 
     // Given a BGP update containing a single route announcement
     let prefix = Prefix::from_str("127.0.0.1/32").unwrap();
@@ -528,7 +522,6 @@ async fn time_store_op_durations() {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-#[cfg(not(tarpaulin))]
 async fn count_insert_retries_during_forced_contention() {
     /*
     const DELAY: Duration = Duration::from_millis(10);
@@ -695,29 +688,16 @@ fn mk_route_update_with_communities(
     .unwrap();
 
     let ingress_id = 1;
-    let peer_ip = "1.2.3.4".parse().unwrap();
-    let peer_asn = "AS1234".parse().unwrap();
-    let provenance = Provenance::for_bgp(ingress_id, peer_ip, peer_asn);
 
-    let ctx: RouteContext = FreshRouteContext::new(
-        roto_update_msg.clone(),
-        RouteStatus::Active,
-        provenance,
-    ).into();
     let mut bulk = SmallVec::new();
 
     for r in rws {
-        bulk.push(Payload::new(r, ctx.clone(), None));
+        bulk.push(Payload::new(r, None, ingress_id, RouteStatus::Active));
     }
 
-    let ctx: RouteContext = FreshRouteContext::new(
-        roto_update_msg,
-        RouteStatus::Withdrawn,
-        provenance,
-    ).into();
 
     for w in wdws {
-        bulk.push(Payload::new(w, ctx.clone(), None));
+        bulk.push(Payload::new(w, None, ingress_id, RouteStatus::Withdrawn));
     }
     Update::Bulk(bulk)
 
@@ -741,6 +721,7 @@ fn mk_route_update_with_communities(
     //))))
 }
 
+#[allow(dead_code)]
 async fn is_filtered(_runner: &RibUnitRunner, _update: Update) -> bool {
     todo!() // before we start using this again, adapt it to the new codebase
             /*

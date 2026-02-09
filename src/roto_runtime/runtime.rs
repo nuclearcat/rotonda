@@ -26,7 +26,7 @@ use roto::{roto_method, roto_static_method, Context, Val};
 
 use super::lists::{MutNamedAsnLists, MutNamedPrefixLists};
 use super::types::{
-    InsertionInfo, Output, Provenance, RotoOutputStream, RouteContext,
+    InsertionInfo, Output, RotoOutputStream 
 };
 use crate::ingress::{self, IngressId, IngressInfo};
 use crate::payload::{RotondaPaMap, RotondaRoute};
@@ -57,9 +57,6 @@ impl From<RotondaRoute> for MutRotondaRoute {
 }
 
 /// Context used for all components.
-///
-/// Currently, the Provenance is not stored so it is not guaranteed to be
-/// available (in case of reprocessing/queries).
 #[derive(Context, Clone)]
 pub struct Ctx {
     pub output: Log,
@@ -93,14 +90,12 @@ impl IngressInfoCache {
     fn info(&mut self) -> &IngressInfo {
         if let Some(ref info) = self.ingress_info {
             info
+        } else if let Some(fresh_info) = self.register.get(self.ingress_id) {
+            self.ingress_info = Some(fresh_info);
+            self.ingress_info.as_ref().unwrap()
         } else {
-            if let Some(fresh_info) = self.register.get(self.ingress_id) {
-                self.ingress_info = Some(fresh_info);
-                self.ingress_info.as_ref().unwrap()
-            } else {
-                warn!("No ingress_info for {}, this is a bug", self.ingress_id);
-                panic!();
-            }
+            warn!("No ingress_info for {}, this is a bug", self.ingress_id);
+            panic!();
         }
     }
     fn peer_asn(&mut self) -> Asn {
@@ -178,11 +173,6 @@ pub fn create_runtime() -> Result<roto::Runtime, String> {
         "The Path attributes pertaining to a certain Route"
     )?;
 
-    rt.register_clone_type_with_name::<RouteContext>(
-        "RouteContext",
-        "Contextual information pertaining to the Route",
-    )?;
-    rt.register_copy_type::<Provenance>("Session/state information")?;
     rt.register_clone_type_with_name::<Log>(
         "Log",
         "Machinery to create output entries",
@@ -261,14 +251,6 @@ pub fn create_runtime() -> Result<roto::Runtime, String> {
         Val(LargeCommunity::from_str(&s).unwrap_or(LargeCommunity::from([0u8;12])))
     }
 
-    // --- Provenance methods
-
-    /// Return the peer ASN
-    #[roto_method(rt, Provenance)]
-    fn peer_asn(provenance: Val<Provenance>) -> Val<Asn> {
-        Val(provenance.peer_asn)
-    }
-
     /// Return the formatted string for `asn`
     #[roto_method(rt, Asn, fmt)]
     fn fmt_asn(asn: Asn) -> Arc<str> {
@@ -338,7 +320,7 @@ pub fn create_runtime() -> Result<roto::Runtime, String> {
         let rr = rr.borrow_mut();
 
         if let Some(list) = rr.owned_map().get::<StandardCommunitiesList>() {
-            return list.communities().iter().any(|&c| c == *to_match);
+            return list.communities().contains(&*to_match);
         }
         false
     }
@@ -352,7 +334,7 @@ pub fn create_runtime() -> Result<roto::Runtime, String> {
         let rr = rr.borrow_mut();
 
         if let Some(list) = rr.owned_map().get::<LargeCommunitiesList>() {
-            return list.communities().iter().any(|&c| c == *to_match);
+            return list.communities().contains(&*to_match);
         }
         false
     }
@@ -1395,7 +1377,7 @@ pub fn create_runtime() -> Result<roto::Runtime, String> {
     rt.register_clone_type_with_name::<HopPath>("aspath", "AS_PATH path attribute")?;
     #[roto_method(rt, RcRotondaPaMap)]
     fn aspath(pamap: Val<RcRotondaPaMap>) -> Option<Val<HopPath>> {
-        pamap.path_attributes().get::<HopPath>().map(|a| Val(a))
+        pamap.path_attributes().get::<HopPath>().map(Val)
     }
     #[roto_method(rt, HopPath)]
     fn contains(hoppath: Val<HopPath>, asn: Asn) -> bool {
@@ -1524,7 +1506,12 @@ fn announcements_count(bgp_update: &BgpUpdateMessage<Bytes>) -> u64 {
 
 fn withdrawals_count(bgp_update: &BgpUpdateMessage<Bytes>) -> u64 {
     if let Ok(iter) = bgp_update.withdrawals() {
-        iter.count().try_into().unwrap_or(u32::MAX)
+        let res = iter.count().try_into().unwrap_or(u32::MAX);
+        if res > 0 {
+            dbg!(res, bgp_update.afi_safis());
+            eprintln!("{}", bgp_update.fmt_pcap_string());
+        }
+        res
     } else {
         0
     }.into()

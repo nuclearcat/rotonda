@@ -8,7 +8,6 @@ use std::{
 };
 
 use chrono::{Duration, Utc};
-use hash_hasher::{HashBuildHasher, HashedSet};
 use inetnum::{addr::Prefix, asn::Asn};
 use log::{debug, error, trace, warn};
 use rotonda_store::{
@@ -25,23 +24,10 @@ use routecore::bgp::{
 use serde::{ser::{SerializeSeq, SerializeStruct}, Serialize, Serializer};
 
 use crate::{
-    ingress::{self, register::{IdAndInfo, OwnedIdAndInfo}, IngressId, IngressInfo}, payload::{RotondaPaMap, RotondaPaMapWithQueryFilter, RotondaRoute, RouterId}, representation::{GenOutput, Json}, roto_runtime::{types::{Provenance, RotoPackage}, Ctx}
+    ingress::{self, register::{IdAndInfo, OwnedIdAndInfo}, IngressId, IngressInfo}, payload::{RotondaPaMap, RotondaPaMapWithQueryFilter, RotondaRoute, RouterId}, representation::{GenOutput, Json}, roto_runtime::{types::{RotoPackage}, Ctx}
 };
 
 use super::{http_ng::Include, QueryFilter};
-
-// -------- PhysicalRib ------------------------------------------------------
-
-// XXX is this actually used for something in the Store right now?
-// impl Meta for RotondaRoute {
-//     type Orderable<'a> = OrdRoute<'a, Rfc4271>;
-
-//     type TBI = TiebreakerInfo;
-
-//     fn as_orderable(&self, _tbi: Self::TBI) -> Self::Orderable<'_> {
-//         todo!()
-//     }
-// }
 
 type Store = StarCastRib<RotondaPaMap, MemoryOnlyConfig>;
 
@@ -54,6 +40,7 @@ type RotoHttpFilter = roto::TypedFunc<
 pub struct Rib {
     unicast: Arc<Option<Store>>,
     multicast: Arc<Option<Store>>,
+    #[allow(dead_code)]
     other_fams:
         HashMap<AfiSafiType, HashMap<(IngressId, Nlri<bytes::Bytes>), PaMap>>,
     ingress_register: Arc<ingress::Register>,
@@ -65,16 +52,6 @@ pub struct Rib {
 struct Multicast(bool);
 
 impl Rib {
-    //pub fn new_physical(ingress_register: Arc<ingress::Register>) -> Result<Self, PrefixStoreError> {
-    //    Ok(Rib {
-    //        unicast: Arc::new(Some(Store::try_default()?)),
-    //        multicast: Arc::new(Some(Store::try_default()?)),
-    //        other_fams: HashMap::new(),
-    //        ingress_register,
-    //        roto_package: None,
-    //    })
-    //}
-
     pub fn new(
         ingress_register: Arc<ingress::Register>,
         roto_package: Option<Arc<RotoPackage>>,
@@ -90,24 +67,6 @@ impl Rib {
         })
     }
 
-    // unused
-    //pub fn new_virtual() -> Self {
-    //    Rib {
-    //        unicast: Arc::new(None),
-    //        multicast: Arc::new(None),
-    //        other_fams: HashMap::new(),
-    //    }
-    //}
-
-    // XXX LH perhaps this should become a characteristic of the Unit instead
-    // of the Rib. Currently, rib_unit::unit::insert_payload() is the only
-    // place that calls this is_physical() and uses it for an early return.
-    // Instead, we could make it a bool flag on the Unit and get rid of the
-    // Option wrapped stores in Rib itself?
-    pub fn is_physical(&self) -> bool {
-        self.unicast.is_some()
-    }
-
     pub fn store(&self) -> Result<&Store, PrefixStoreError> {
         if let Some(rib) = self.unicast.as_ref() {
             Ok(rib)
@@ -120,8 +79,8 @@ impl Rib {
         &self,
         val: &RotondaRoute,
         route_status: RouteStatus,
-        provenance: Provenance,
         ltime: u64,
+        ingress_id: IngressId,
     ) -> Result<UpsertReport, String> {
         let res = match val {
             RotondaRoute::Ipv4Unicast(n, ..) => self.insert_prefix(
@@ -129,32 +88,32 @@ impl Rib {
                 Multicast(false),
                 val,
                 route_status,
-                provenance,
                 ltime,
+                ingress_id,
             ),
             RotondaRoute::Ipv6Unicast(n, ..) => self.insert_prefix(
                 &n.prefix(),
                 Multicast(false),
                 val,
                 route_status,
-                provenance,
                 ltime,
+                ingress_id,
             ),
             RotondaRoute::Ipv4Multicast(n, ..) => self.insert_prefix(
                 &n.prefix(),
                 Multicast(true),
                 val,
                 route_status,
-                provenance,
                 ltime,
+                ingress_id,
             ),
             RotondaRoute::Ipv6Multicast(n, ..) => self.insert_prefix(
                 &n.prefix(),
                 Multicast(true),
                 val,
                 route_status,
-                provenance,
                 ltime,
+                ingress_id,
             ),
         };
         res.map_err(|e| e.to_string())
@@ -166,8 +125,8 @@ impl Rib {
         multicast: Multicast,
         val: &RotondaRoute,
         route_status: RouteStatus,
-        provenance: Provenance, // for ingress_id / mui
         ltime: u64,
+        ingress_id: IngressId,
     ) -> Result<UpsertReport, PrefixStoreError> {
         // Check whether our self.rib is Some(..) or bail out.
         let arc_store = match multicast.0 {
@@ -179,7 +138,7 @@ impl Rib {
             .as_ref()
             .ok_or(PrefixStoreError::StoreNotReadyError)?;
 
-        let mui = provenance.ingress_id;
+        let mui = ingress_id;
 
         if route_status == RouteStatus::Withdrawn {
             // instead of creating an empty PrefixRoute for this Prefix and
@@ -206,13 +165,9 @@ impl Rib {
             val.rotonda_pamap().clone(),
         );
         
-        let res = store.insert(
+        store.insert(
             prefix, pubrec, None, // Option<TBI>
-        );
-
-        //println!("store counters {}", store.prefixes_count());
-
-        res
+        )
     }
 
     pub fn withdraw_for_ingress(
@@ -533,7 +488,7 @@ impl Rib {
 
         let _ = res.as_mut().map(|sr| {
             self.apply_filter(&mut sr.query_result.records, &filter, maybe_roto_function.clone());
-            sr.query_result.more_specifics.as_mut().map(|rs| {
+            if let Some(rs) = sr.query_result.more_specifics.as_mut() {
                 rs.v4.retain_mut(|pr|{
                     self.apply_filter(&mut pr.meta, &filter, maybe_roto_function.clone());
                     !pr.meta.is_empty()
@@ -542,8 +497,8 @@ impl Rib {
                     self.apply_filter(&mut pr.meta, &filter, maybe_roto_function.clone());
                     !pr.meta.is_empty()
                 });
-            });
-            sr.query_result.less_specifics.as_mut().map(|rs| {
+            }
+            if let Some(rs) = sr.query_result.less_specifics.as_mut() {
                 rs.v4.retain_mut(|pr|{
                     self.apply_filter(&mut pr.meta, &filter, maybe_roto_function.clone());
                     !pr.meta.is_empty()
@@ -552,7 +507,7 @@ impl Rib {
                     self.apply_filter(&mut pr.meta, &filter, maybe_roto_function.clone());
                     !pr.meta.is_empty()
                 });
-            });
+            }
         });
 
         debug!("filtering took {:?}", std::time::Instant::now().duration_since(t0));
@@ -576,10 +531,19 @@ impl Rib {
                 ).unwrap_or(true)
             });
         }
+
         if let Some(peer_asn) = filter.peer_asn {
             records.retain(|r|{
                 self.ingress_register.get(r.multi_uniq_id).map(|ii|
                     ii.remote_asn == Some(peer_asn)
+                ).unwrap_or(true)
+            });
+        }
+
+        if let Some(peer_addr) = filter.peer_addr {
+            records.retain(|r|{
+                self.ingress_register.get(r.multi_uniq_id).map(|ii|
+                    ii.remote_addr == Some(peer_addr)
                 ).unwrap_or(true)
             });
         }
@@ -672,7 +636,7 @@ impl Rib {
             },
             Err(e) => {
                 error!("error in search_and_output_routes: {e}");
-                return Err(format!("store error: {e}").into());
+                return Err(format!("store error: {e}"));
             }
         }
 
@@ -681,19 +645,19 @@ impl Rib {
 
     /// Query the store based on `IngressId`/MUI
     pub fn search_routes_for_ingress(
-        afisafi: AfiSafiType,
-        nlri: Nlri<&[u8]>,
-        ingress_id: IngressId,
-        match_options: MatchOptions
+        _afisafi: AfiSafiType,
+        _nlri: Nlri<&[u8]>,
+        _ingress_id: IngressId,
+        _match_options: MatchOptions
     ) -> Result<SearchResult, String> {
         todo!()
     }
 
     /// Query the store based on Origin AS in the AS_PATH
     pub fn search_routes_for_origin_as(
-        afisafi: AfiSafiType,
-        origin_as: Asn,
-        match_options: MatchOptions
+        _afisafi: AfiSafiType,
+        _origin_as: Asn,
+        _match_options: MatchOptions
     ) -> Result<SearchResult, String> {
         todo!()
     }
@@ -873,7 +837,7 @@ impl Serialize for RecordWrapper<'_, '_, '_> {
             HelperWithQueryFilter {
                 ingress: self.1.get_tuple(self.0.multi_uniq_id).unwrap(),
                 status: RouteStatusWrapper(self.0.status),
-                pamap: RotondaPaMapWithQueryFilter(&self.0.meta, &self.2),
+                pamap: RotondaPaMapWithQueryFilter(&self.0.meta, self.2),
             }.serialize(serializer)
         } else {
             Helper {
@@ -892,10 +856,10 @@ impl Serialize for RecordSetWrapper<'_, '_, '_> {
         S: Serializer {
             let mut s = serializer.serialize_seq(Some(self.0.len()))?;
             for e in &self.0.v4 {
-               s.serialize_element(&PrefixRecordWrapper(&e, self.1, self.2))?;
+               s.serialize_element(&PrefixRecordWrapper(e, self.1, self.2))?;
             }
             for e in &self.0.v6 {
-               s.serialize_element(&PrefixRecordWrapper(&e, self.1, self.2))?;
+               s.serialize_element(&PrefixRecordWrapper(e, self.1, self.2))?;
             }
        s.end()
     }
@@ -931,64 +895,13 @@ impl Serialize for RouteStatusWrapper {
 #[derive(Debug)]
 pub enum StoreInsertionEffect {
     RoutesWithdrawn(usize),
+    #[allow(dead_code)]
     RoutesRemoved(usize),
     RouteAdded,
     RouteUpdated,
 }
 
-// XXX this will go, or will perhaps live in rotonda_store
-#[derive(Debug)]
-pub struct StoreInsertionReport {
-    pub change: StoreInsertionEffect,
 
-    /// The number of items stored at the prefix after the MergeUpdate operation.
-    pub item_count: usize,
-
-    /// The time taken to perform the MergeUpdate operation.
-    pub op_duration: Duration,
-}
-
-//------------ StoredValue ---------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct StoredValue {
-    value: bytes::Bytes,
-    hash: u64,
-    disk_id: u64,
-    i_time: u64,
-}
-
-// --- Route related helpers ------------------------------------------------------------------------------------------
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct PeerId {
-    pub ip: Option<IpAddr>,
-    pub asn: Option<Asn>,
-}
-
-impl PeerId {
-    fn new(ip: Option<IpAddr>, asn: Option<Asn>) -> Self {
-        Self { ip, asn }
-    }
-}
-
-impl From<IpAddr> for PeerId {
-    fn from(ip_addr: IpAddr) -> Self {
-        PeerId::new(Some(ip_addr), None)
-    }
-}
-
-pub trait RouteExtra {
-    fn withdraw(&mut self);
-
-    fn peer_id(&self) -> Option<PeerId>;
-
-    fn router_id(&self) -> Option<Arc<RouterId>>;
-
-    fn announced_by(&self, peer_id: &PeerId) -> bool;
-
-    fn is_withdrawn(&self) -> bool;
-}
 
 // --- Tests ----------------------------------------------------------------------------------------------------------
 
@@ -998,7 +911,6 @@ mod tests {
         alloc::System, net::IpAddr, ops::Deref, str::FromStr, sync::Arc,
     };
 
-    use hashbrown::hash_map::DefaultHashBuilder;
     use inetnum::{addr::Prefix, asn::Asn};
     //use roto::types::{
     //    builtin::{BuiltinTypeValue, NlriStatus, PrefixRoute, RotondaId},

@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 use tokio::{io::AsyncRead, net::TcpStream};
 
 use crate::roto_runtime::types::{
-    FilterName, Output, OutputStreamMessage, PeerRibType, Provenance, RotoOutputStream, RotoScripts, RouteContext
+    FilterName, Output, OutputStreamMessage, PeerRibType, RotoOutputStream, RotoScripts
 };
 
 use crate::ingress::{self, IngressId};
@@ -47,7 +47,6 @@ pub struct RouterHandler {
     roto_function: Option<RotoFunc>,
     roto_context: Arc<std::sync::Mutex<Ctx>>,
     router_id_template: Arc<ArcSwap<String>>,
-    filter_name: Arc<ArcSwap<FilterName>>,
     status_reporter: Arc<BmpTcpInStatusReporter>,
     state_machine: Arc<Mutex<Option<BmpState>>>,
     tracer: Arc<Tracer>,
@@ -57,6 +56,7 @@ pub struct RouterHandler {
 
     // Link to an empty RtrCache for now. Eventually, this should point to the
     // main all-encompassing RIB.
+    #[allow(dead_code)]
     rtr_cache: Arc<RtrCache>,
     ingress_register: Arc<ingress::Register>,
 }
@@ -68,7 +68,6 @@ impl RouterHandler {
         roto_function: Option<RotoFunc>,
         roto_context: Arc<std::sync::Mutex<Ctx>>,
         router_id_template: Arc<ArcSwap<String>>,
-        filter_name: Arc<ArcSwap<FilterName>>,
         status_reporter: Arc<BmpTcpInStatusReporter>,
         state_machine: Arc<Mutex<Option<BmpState>>>,
         tracer: Arc<Tracer>,
@@ -82,7 +81,6 @@ impl RouterHandler {
             roto_function,
             roto_context,
             router_id_template,
-            filter_name,
             status_reporter,
             state_machine,
             tracer,
@@ -126,7 +124,6 @@ impl RouterHandler {
             router_id_template: Arc::new(ArcSwap::from_pointee(
                 BmpTcpIn::default_router_id_template(),
             )),
-            filter_name: Default::default(),
             rtr_cache: Default::default(),
             status_reporter: parent_status_reporter,
             state_machine,
@@ -175,18 +172,6 @@ impl RouterHandler {
         let mut router_id = hash32::FnvHasher::default();
         router_addr.hash(&mut router_id);
 
-        let provenance = Provenance::for_bmp(
-            ingress_id,
-            // peer_ip: we are not diving into the BMP message to see if this
-            // is a RouteMonitoring msg, just set to BMP IP and overwrite
-            // later if necessary
-            router_addr.ip(),
-            // peer_asn, set to Asn(0) for now, overwrite later
-            Asn::from_u32(0),
-            router_addr.ip(),
-            [0; 9],
-            PeerRibType::InPre,
-        );
 
         // Ensure that on first use the metrics for the "unknown" router are
         // correctly initialised.
@@ -281,7 +266,6 @@ impl RouterHandler {
                                 ingress_id,
                                 bmp_msg,
                                 //None,
-                                provenance,
                                 trace_id,
                             )
                             .await
@@ -333,7 +317,6 @@ impl RouterHandler {
         addr: SocketAddr,
         ingress_id: IngressId,
         msg: Message<Bytes>,
-        provenance: Provenance,
         trace_id: Option<u8>,
     ) -> Result<(), (Arc<RouterId>, String)> {
         let mut bmp_state_lock = self.state_machine.lock().await;
@@ -364,17 +347,6 @@ impl RouterHandler {
             Message::InitiationMessage(..) => None,
             Message::TerminationMessage(..) => None,
             Message::RouteMirroring(msg) => Some(msg.per_peer_header()),
-        };
-        let provenance = if let Some(ref pph) = pph {
-            Provenance {
-                peer_ip: pph.address(),
-                peer_asn: pph.asn(),
-                peer_rib_type: (pph.is_post_policy() , pph.adj_rib_type()).into(),
-                //peer_distuingisher: pph.distinguisher(),
-                ..provenance
-            }
-        } else {
-            provenance
         };
 
         // Ideally, we do an ingress lookup here instead of somewhere deeper in the FSM. The
@@ -780,26 +752,20 @@ mod tests {
         // A BMP Peer Down Notification message without a corresponding Peer
         // Up Notification message.
         let pph = mk_per_peer_header("10.0.0.1", 12345);
-        let provenance = Provenance::for_bmp(
-            1,
-            pph.peer_address,
-            pph.peer_as,
-            "127.0.0.1".parse().unwrap(),
-            [0u8; 9], // peer distinguisher,
-            PeerRibType::InPre,
-        );
+
+        let ingress_id = 1;
 
         let bad_peer_down_msg =
             Message::from_octets(mk_peer_down_notification_msg(&pph))
                 .unwrap();
 
-        process_msg(&runner, bad_initiation_msg, Some(provenance))
+        process_msg(&runner, bad_initiation_msg, ingress_id)
             .await
             .unwrap();
 
         // Two bad messages
-        process_msg(&runner, bad_peer_down_msg.clone(), Some(provenance)).await.unwrap();
-        process_msg(&runner, bad_peer_down_msg, Some(provenance)).await.unwrap();
+        process_msg(&runner, bad_peer_down_msg.clone(), ingress_id).await.unwrap();
+        process_msg(&runner, bad_peer_down_msg, ingress_id).await.unwrap();
 
         let metrics = get_testable_metrics_snapshot(
             &runner.status_reporter.metrics().unwrap(),
@@ -832,16 +798,18 @@ mod tests {
         ))
         .unwrap();
 
+        let ingress_id = 1234;
+
         // router id is "unknown" at this point
-        process_msg(&runner, bad_peer_down_msg.clone(), None).await.unwrap(); // 1
-        process_msg(&runner, initiation_msg, None).await.unwrap(); // 2
+        process_msg(&runner, bad_peer_down_msg.clone(), ingress_id).await.unwrap(); // 1
+        process_msg(&runner, initiation_msg, ingress_id).await.unwrap(); // 2
 
         // messages after this point are counted under router id SYS_NAME
-        process_msg(&runner, bad_peer_down_msg.clone(), None).await.unwrap(); // 3
-        process_msg(&runner, reinitiation_msg, None).await.unwrap(); // 4
+        process_msg(&runner, bad_peer_down_msg.clone(), ingress_id).await.unwrap(); // 3
+        process_msg(&runner, reinitiation_msg, ingress_id).await.unwrap(); // 4
 
         // messages after this point are counted under router id OTHER_SYS_NAME
-        process_msg(&runner, bad_peer_down_msg, None).await.unwrap(); // 5
+        process_msg(&runner, bad_peer_down_msg, ingress_id).await.unwrap(); // 5
 
         let metrics = get_testable_metrics_snapshot(
             &runner.status_reporter.metrics().unwrap(),
@@ -890,16 +858,14 @@ mod tests {
     async fn process_msg(
         router_handler: &RouterHandler,
         msg: Message<bytes::Bytes>,
-        provenance: Option<Provenance>,
+        ingress_id: IngressId,
     ) -> Result<(), (Arc<String>, String)> {
-        let provenance = provenance.unwrap();
         router_handler
             .process_msg(
                 std::time::Instant::now(),
                 "1.2.3.4:12345".parse().unwrap(),
-                provenance.ingress_id,
+                ingress_id,
                 msg,
-                provenance,
                 None,
             )
             .await

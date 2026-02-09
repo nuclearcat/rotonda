@@ -6,8 +6,6 @@ pub(crate) mod internal {
 
     use crate::metrics::{self, OutputFormat, Target};
 
-    pub const MOCK_ROUTER_ID: &str = "mock-router";
-
     /// Tries to enable logging. Intended for use in tests.
     ///
     /// Accepts a log level name as a string, e.g. "trace".
@@ -994,10 +992,8 @@ pub mod bgp {
                                     //mp_reach_nlri.put_u16(AfiSafiType::Ipv6Unicast.into());
                                     //mp_reach_nlri
                                     //    .put_u8(u8::from(AfiSafiType::Unicast));
-                                    if let NextHop::Unicast(IpAddr::V6(
-                                        addr,
-                                    ))
-                                    | NextHop::Ipv6LL(addr, _)
+                                    if let NextHop::Unicast(IpAddr::V6(addr))
+                                    | NextHop::Ipv6LL{global: addr, ..}
                                     | NextHop::Multicast(IpAddr::V6(
                                         addr,
                                     )) = next_hop.0

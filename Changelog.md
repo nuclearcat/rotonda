@@ -1,27 +1,34 @@
 # Changelog
  
-## Unreleased version
+## 0.5.1
 
-Released yyyy-mm-dd.
-
-
-### Breaking changes
+Released 2026-02-09.
 
 
 ### New
+
+* Added `filter[peerAddress]` to the `/ribs` HTTP endpoint.
+
+* HTTP API responses now include the `NextHop` part of the `MP_REACH_NLRI` path
+  attribute.
+
+* HTTP API supports gzip compressed responses, and streaming/chunking of
+  responses.
 
 
 ### Bug fixes
 
 
-### Other changes
-
-
-### Known issues
+* SELinux on CentOS panic on startup
+ ([#132](https://github.com/NLnetLabs/rotonda/issues/132),
+ [roto#259](https://github.com/NLnetLabs/roto/issues/259),
+ [#150](https://github.com/NLnetLabs/rotonda/pull/150))
 
 
 ### Acknowledgements
 
+We would like to very much thank Rein Fernhout (LevitatingBusinessMan) and
+Denys Fedoryshchenko for their (ongoing) input and support in various ways.
  
 ## 0.5.0 'Mosaïque Public'
 

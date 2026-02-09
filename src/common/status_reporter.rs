@@ -1,10 +1,10 @@
 use std::{
-    fmt::{Debug, Display},
+    fmt::Display,
     num::NonZeroUsize,
     sync::Arc,
 };
 
-use log::{debug, error, trace};
+use log::{debug, trace};
 
 use crate::{comms::GateStatus, manager::TargetCommand, metrics};
 
@@ -37,16 +37,8 @@ pub trait Chainable: Named {
 }
 
 pub trait AnyStatusReporter: Chainable {
+    #[allow(dead_code)]
     fn metrics(&self) -> Option<Arc<dyn metrics::Source>>;
-
-    fn input_mismatch<T: Display, U: Debug>(&self, expected: T, received: U) {
-        sr_log!(
-            error: self,
-            "Configuration error: Received {:#?} but expected {}",
-            received,
-            expected
-        );
-    }
 
     fn upstream_sources_changed(
         &self,

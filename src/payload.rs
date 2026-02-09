@@ -1,20 +1,15 @@
-use log::debug;
-use rotonda_store::match_options::QueryResult;
-
-use rotonda_store::prefix_record::Meta;
-use routecore::bgp::communities::{Community, HumanReadableCommunity};
+use rotonda_store::prefix_record::{Meta, RouteStatus};
 use routecore::bgp::message::PduParseInfo;
-use routecore::bgp::path_attributes::{OwnedPathAttributes, PathAttribute};
+use routecore::bgp::path_attributes::OwnedPathAttributes;
 use routecore::bgp::path_selection::TiebreakerInfo;
 use routecore::bgp::types::AfiSafiType;
-use serde::ser::{SerializeSeq, SerializeStruct};
+use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use smallvec::{smallvec, SmallVec};
 use std::fmt;
-use uuid::Uuid;
 
 use crate::ingress::{self, IngressId};
-use crate::roto_runtime::types::{OutputStreamMessage, RouteContext};
+use crate::roto_runtime::types::OutputStreamMessage;
 use crate::units::rib_unit::rpki::RpkiInfo;
 use crate::units::rib_unit::QueryFilter;
 
@@ -219,8 +214,8 @@ impl Serialize for RotondaPaMap {
         let mut s = serializer.serialize_struct("route", 2)?;
         s.serialize_field("rpki", &self.rpki_info())?;
         s.serialize_field("pathAttributes", &self.path_attributes().iter().flatten()
-            .filter(|pa| pa.type_code() != 14 && pa.type_code() != 15)
-            .map(|pa| pa.to_owned()).flatten().collect::<Vec<_>>())?;
+            .filter(|pa| pa.type_code() != 15)
+            .flat_map(|pa| pa.to_owned()).collect::<Vec<_>>())?;
         s.end()
     }
 }
@@ -236,10 +231,9 @@ impl<'a, 'b> Serialize for RotondaPaMapWithQueryFilter<'a, 'b> {
         s.serialize_field("pathAttributes", &self.0.path_attributes().iter().flatten()
             .filter(|pa|
                 (self.1.fields_path_attributes.as_ref().map(|fpa| fpa.contains(&pa.type_code())).unwrap_or(true))
-                &&
-                pa.type_code() != 14 && pa.type_code() != 15
+                && pa.type_code() != 15
                 )
-            .map(|pa| pa.to_owned()).flatten().collect::<Vec<_>>())?;
+            .flat_map(|pa| pa.to_owned()).collect::<Vec<_>>())?;
         s.end()
     }
 }
@@ -253,9 +247,10 @@ impl From<OwnedPathAttributes> for RotondaPaMap {
 #[derive(Clone, Debug, Eq)]
 pub struct Payload {
     pub rx_value: RotondaRoute, //RouteWorkshop<N>, //was: TypeValue,
-    pub context: RouteContext,
     pub trace_id: Option<u8>,
     pub received: std::time::Instant,
+    pub ingress_id: IngressId,
+    pub route_status: RouteStatus,
 }
 
 impl PartialEq for Payload {
@@ -269,28 +264,32 @@ impl PartialEq for Payload {
 impl Payload {
     pub fn new(
         rx_value: RotondaRoute,
-        context: RouteContext,
         trace_id: Option<u8>,
+        ingress_id: IngressId,
+        route_status: RouteStatus,
     ) -> Self {
         Self {
             rx_value,
-            context,
             trace_id,
             received: std::time::Instant::now(),
+            ingress_id,
+            route_status,
         }
     }
 
     pub fn with_received(
         rx_value: RotondaRoute,
-        context: RouteContext,
         trace_id: Option<u8>,
         received: std::time::Instant,
+        ingress_id: IngressId,
+        route_status: RouteStatus,
     ) -> Self {
         Self {
             rx_value,
-            context,
             trace_id,
             received,
+            ingress_id,
+            route_status,
         }
     }
 
@@ -301,6 +300,7 @@ impl Payload {
 
 //------------ Update --------------------------------------------------------
 
+#[allow(clippy::large_enum_variant)] // FIXME
 #[derive(Clone, Debug)]
 pub enum Update {
     Single(Payload),
@@ -314,10 +314,6 @@ pub enum Update {
     WithdrawBulk(SmallVec<[IngressId; 8]>),
     // Used to signal the RibUnit a MUI should be set to active again.
     IngressReappeared(IngressId),
-    QueryResult(
-        Uuid,
-        Result<QueryResult<crate::payload::RotondaPaMap>, String>,
-    ),
     UpstreamStatusChange(UpstreamStatus),
 
     OutputStream(SmallVec<[OutputStreamMessage; 2]>),
@@ -340,7 +336,6 @@ impl Update {
             Update::Withdraw(_ingress_id, _maybe_afisafi) => smallvec![],
             Update::WithdrawBulk(..) => smallvec![],
             Update::IngressReappeared(..) => smallvec![],
-            Update::QueryResult(_, _) => smallvec![],
             Update::UpstreamStatusChange(_) => smallvec![],
             Update::OutputStream(..) => smallvec![],
             Update::Rtr(..) => smallvec![],

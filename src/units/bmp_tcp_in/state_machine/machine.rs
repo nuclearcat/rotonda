@@ -68,8 +68,8 @@ use crate::{
     ingress,
     payload::{Payload, RouterId, Update},
     roto_runtime::types::{
-        explode_announcements, explode_withdrawals, FreshRouteContext,
-        PeerId, PeerRibType, Provenance,
+        explode_announcements, explode_withdrawals, 
+        PeerId, PeerRibType,
     },
 };
 
@@ -106,6 +106,8 @@ impl EoRProperties {
     }
 }
 
+// TODO Remove
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct PeerDetails {
     peer_bgp_id: [u8; 4],
@@ -127,28 +129,6 @@ pub struct PeerState {
     /// The set of End-of-RIB markers that we expect to see for this peer,
     /// based on received Peer Up Notifications.
     pub pending_eors: HashSet<EoRProperties>,
-
-    /// RFC 7854 section "4.9. Peer Down Notification" states:
-    ///     > A Peer Down message implicitly withdraws all routes that were
-    ///     > associated with the peer in question.  A BMP implementation MAY
-    ///     > omit sending explicit withdraws for such routes."
-    ///
-    /// RFC 4271 section "4.3. UPDATE Message Format" states:
-    ///     > An UPDATE message can list multiple routes that are to be withdrawn
-    ///     > from service.  Each such route is identified by its destination
-    ///     > (expressed as an IP prefix), which unambiguously identifies the route
-    ///     > in the context of the BGP speaker - BGP speaker connection to which
-    ///     > it has been previously advertised.
-    ///     >      
-    ///     > An UPDATE message might advertise only routes that are to be
-    ///     > withdrawn from service, in which case the message will not include
-    ///     > path attributes or Network Layer Reachability Information."
-    ///
-    /// So, we need to generate synthetic withdrawals for the routes announced by a peer when that peer goes down, and
-    /// the only information needed to announce a withdrawal is the peer identity (represented by the PerPeerHeader and
-    /// the prefix that is no longer routed to. We only need to keep the set of announced prefixes here as PeerStates
-    /// stores the PerPeerHeader.
-    pub announced_nlri: HashSet<Nlri<bytes::Bytes>>,
 
     pub peer_details: PeerDetails,
 
@@ -232,11 +212,11 @@ where
 impl BmpState {
     pub fn _ingress_id(&self) -> ingress::IngressId {
         match self {
-            BmpState::Initiating(v) => v.ingress_id.clone(),
-            BmpState::Dumping(v) => v.ingress_id.clone(),
-            BmpState::Updating(v) => v.ingress_id.clone(),
-            BmpState::Terminated(v) => v.ingress_id.clone(),
-            BmpState::_Aborted(ingress_id, _) => ingress_id.clone(),
+            BmpState::Initiating(v) => v.ingress_id,
+            BmpState::Dumping(v) => v.ingress_id,
+            BmpState::Updating(v) => v.ingress_id,
+            BmpState::Terminated(v) => v.ingress_id,
+            BmpState::_Aborted(ingress_id, _) => *ingress_id,
         }
     }
 
@@ -350,8 +330,6 @@ pub trait Initiable {
         sys_desc: String,
         sys_extra: Vec<String>,
     );
-
-    fn sys_name(&self) -> Option<&str>;
 }
 
 impl<T> BmpStateDetails<T>
@@ -408,9 +386,9 @@ pub trait PeerAware {
     ///
     /// Returns a tuple of
     ///   * a boolean which if true signals the configuration was recorded, false if configuration
-    ///   for the peer already exists.
+    ///     for the peer already exists.
     ///   * optionally an `IngressId`, if a peer was found in the Ingress registry (i.e. this is a
-    ///   reconnecting peer).
+    ///     reconnecting peer).
     ///
     /// [1]: https://datatracker.ietf.org/doc/html/rfc4724#section-2
     fn add_peer_config(
@@ -463,8 +441,6 @@ pub trait PeerAware {
         _pph: &PerPeerHeader<Bytes>,
     ) -> Option<ingress::IngressId>;
 
-    fn num_peer_configs(&self) -> usize;
-
     fn is_peer_eor_capable(&self, pph: &PerPeerHeader<Bytes>)
         -> Option<bool>;
 
@@ -486,22 +462,6 @@ pub trait PeerAware {
 
     fn num_pending_eors(&self) -> usize;
 
-    fn add_announced_prefix(
-        &mut self,
-        pph: &PerPeerHeader<Bytes>,
-        prefix: Nlri<bytes::Bytes>,
-    ) -> bool;
-
-    fn remove_announced_prefix(
-        &mut self,
-        pph: &PerPeerHeader<Bytes>,
-        prefix: &Nlri<bytes::Bytes>,
-    );
-
-    fn get_announced_prefixes(
-        &self,
-        pph: &PerPeerHeader<Bytes>,
-    ) -> Option<std::collections::hash_set::Iter<Nlri<bytes::Bytes>>>;
 }
 
 impl<T> BmpStateDetails<T>
@@ -625,12 +585,12 @@ where
             // receive a Peer Down Notification without a
             // corresponding prior Peer Up Notification for the same
             // peer?
-            return self.mk_invalid_message_result(
+            self.mk_invalid_message_result(
                 "PeerDownNotification received for peer that was not 'up'",
                 Some(false),
                 // TODO: Silly to_copy the bytes, but PDN won't give us the octets back..
                 Some(Bytes::copy_from_slice(msg.as_ref())),
-            );
+            )
         }
     }
 
@@ -811,7 +771,7 @@ where
                             ControlFlow::Continue(saved_self) => saved_self,
                         };
 
-                    if let Ok((payloads, mut update_report_msg)) = saved_self
+                    if let Ok((payloads, update_report_msg)) = saved_self
                         .extract_route_monitoring_routes(
                             received,
                             pph.clone(),
@@ -937,53 +897,8 @@ where
         let mut update_report_msg =
             UpdateReportMessage::new(self.router_id.clone());
 
-        //let bgp_msg = BytesRecord::<BgpUpdateMessage>::from(bgp_msg.clone());
 
-        //let provenance = Provenance::mock();
-
-        let provenance = Provenance::for_bmp(
-            ingress_id,
-            pph.address(),
-            pph.asn(),
-            pph.address(), // FIXME wrong: need the BMP router addr here
-            //pph.distinguisher(),
-            [0; 9], // FIXME also wrong
-            PeerRibType::from((pph.is_post_policy(), pph.adj_rib_type())),
-            //timestamp: pph.timestamp(),
-            //// router_id: router_id.finish() as u32,
-            //peer_id: PeerId::new(pph.address(), pph.asn()),
-            //peer_bgp_id: pph.bgp_id().into(),
-            //peer_distuingisher: <[u8; 8]>::try_from(pph.distinguisher()).unwrap(),
-            //peer_rib_type: PeerRibType::from((pph.is_post_policy(), pph.adj_rib_type())),
-            //connection_id: self.source_id.socket_addr(),
-        );
-
-        //let ctx = FreshRouteContext:: new(
-        //    Some(bgp_msg.clone()),
-        //    NlriStatus::InConvergence,
-        //    provenance
-        //);
-        let context = FreshRouteContext::new(
-            bgp_msg.clone(),
-            RouteStatus::Active,
-            provenance,
-        );
-
-        /*
-        payloads.extend(
-            announcements.into_iter().map(|rws|{
-                //mk_payload(rws, received, context.clone())
-            Payload::with_received(
-                rws,
-                ctx.clone().into(),
-                None,
-                received
-            )
-            })
-        );
-        */
-
-        if rr_reach.len() > 0 {
+        if !rr_reach.is_empty() {
             //update_report_msg.inc_valid_announcements();
             update_report_msg.n_new_prefixes = rr_reach.len();
         }
@@ -997,42 +912,23 @@ where
                 update_report_msg.inc_valid_announcements();
                 Payload::with_received(
                     rr,
-                    context.clone().into(),
                     None,
                     received,
+                    ingress_id,
+                    RouteStatus::Active,
                 )
             }),
         );
 
-        /*
-        let context = FreshRouteContext{
-            nlri_status: NlriStatus::Withdrawn,
-            ..context
-        };
-        */
-        let context = FreshRouteContext {
-            status: RouteStatus::Withdrawn,
-            ..context
-        };
-
-        /*
-        payloads.extend(
-            withdrawals.into_iter().map(|rws|{
-                //mk_payload(rws, received, context.clone())
-            Payload::with_received(
-                rws,
-                ctx.clone().into(),
-                None,
-                received
-            )
-            })
-        );
-        */
-
         payloads.extend(rr_unreach.into_iter().map(|rr| {
-            //mk_payload(wds, received, context.clone())
             update_report_msg.inc_valid_withdrawals();
-            Payload::with_received(rr, context.clone().into(), None, received)
+            Payload::with_received(
+                rr,
+                None,
+                received,
+                ingress_id,
+                RouteStatus::Withdrawn
+            )
         }));
 
         Ok((payloads, update_report_msg))
@@ -1214,7 +1110,7 @@ impl BmpState {
                 inner.process_msg(received, bmp_msg, trace_id)
             }
             BmpState::Terminated(inner) => {
-                inner.process_msg(bmp_msg.into(), trace_id)
+                inner.process_msg(bmp_msg, trace_id)
             }
             BmpState::_Aborted(source_id, router_id) => {
                 ProcessingResult::new(
@@ -1357,7 +1253,6 @@ impl PeerAware for PeerStates {
                 session_config,
                 eor_capable,
                 pending_eors: HashSet::with_capacity(0),
-                announced_nlri: HashSet::with_capacity(0),
                 peer_details: PeerDetails {
                     peer_bgp_id: pph.bgp_id(),
                     peer_distinguisher: pph
@@ -1436,9 +1331,6 @@ impl PeerAware for PeerStates {
         self.0.remove(pph) //.is_some()
     }
 
-    fn num_peer_configs(&self) -> usize {
-        self.0.len()
-    }
 
     fn is_peer_eor_capable(
         &self,
@@ -1485,36 +1377,5 @@ impl PeerAware for PeerStates {
         self.0
             .values()
             .fold(0, |acc, peer_state| acc + peer_state.pending_eors.len())
-    }
-
-    fn add_announced_prefix(
-        &mut self,
-        pph: &PerPeerHeader<Bytes>,
-        prefix: Nlri<bytes::Bytes>,
-    ) -> bool {
-        if let Some(peer_state) = self.0.get_mut(pph) {
-            peer_state.announced_nlri.insert(prefix)
-        } else {
-            false
-        }
-    }
-
-    fn remove_announced_prefix(
-        &mut self,
-        pph: &PerPeerHeader<Bytes>,
-        nlri: &Nlri<bytes::Bytes>,
-    ) {
-        if let Some(peer_state) = self.0.get_mut(pph) {
-            peer_state.announced_nlri.remove(nlri);
-        }
-    }
-
-    fn get_announced_prefixes(
-        &self,
-        pph: &PerPeerHeader<Bytes>,
-    ) -> Option<std::collections::hash_set::Iter<Nlri<bytes::Bytes>>> {
-        self.0
-            .get(pph)
-            .map(|peer_state| peer_state.announced_nlri.iter())
     }
 }

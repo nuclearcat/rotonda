@@ -32,32 +32,32 @@ pub struct Cli<W: std::io::Write>(pub W);
 // For Html, GenOutput is implemented on the specific Html structs (deriving RsHtml) directly.
 
 
-/// Generate a GenOutput<Json<_>> using serde_json.
-///
-/// Usage:
-///     
-///     // Will serialize SomeType
-///     genoutput_json!(SomeType)
-///
-///     // Will serialize SomeWrapperType.0
-///     genoutput_json!(SomeWrapperType, 0)
+// Generate a GenOutput<Json<_>> using serde_json.
+//
+// Usage:
+//     
+//     // Will serialize SomeType
+//     genoutput_json!(SomeType)
+//
+//     // Will serialize SomeWrapperType.0
+//     genoutput_json!(SomeWrapperType, 0)
 #[macro_export]
 macro_rules! genoutput_json {
     ($type:ty $(, $val:tt )? ) => {
         impl<W: std::io::Write> GenOutput<Json<W>> for $type {
             fn write(&self, target: &mut Json<W>) -> Result<(), crate::representation::OutputError> {
-                let _ = serde_json::to_writer(&mut target.0, &self$(.$val)?).unwrap();
+                serde_json::to_writer(&mut target.0, &self$(.$val)?)?;
                 Ok(())
             }
-            fn write_seq_start(target: &mut Json<W>) -> Result<(), crate::representation::OutputError> {
+            fn write_seq_start(target: &mut Json<W>) -> Result<(), $crate::representation::OutputError> {
                 let _ = write!(&mut target.0, "[");
                 Ok(())
             }
-            fn write_seq_end(target: &mut Json<W>) -> Result<(), crate::representation::OutputError> {
+            fn write_seq_end(target: &mut Json<W>) -> Result<(), $crate::representation::OutputError> {
                 let _ = write!(&mut target.0, "]");
                 Ok(())
             }
-            fn write_seq_sep(target: &mut Json<W>) -> Result<(), crate::representation::OutputError> {
+            fn write_seq_sep(target: &mut Json<W>) -> Result<(), $crate::representation::OutputError> {
                 let _ = write!(&mut target.0, ",");
                 Ok(())
             }
@@ -66,10 +66,25 @@ macro_rules! genoutput_json {
     }
 }
 
+#[allow(dead_code)]
 pub struct OutputError {
     error_type: OutputErrorType,
 }
 
+#[allow(dead_code)]
 enum OutputErrorType {
+    Io(std::io::Error),
     Other,
+}
+
+impl From<serde_json::Error> for OutputError {
+    fn from(err: serde_json::Error) -> Self {
+        Self {
+            error_type: if err.is_io() {
+                OutputErrorType::Io(err.into())
+            } else {
+                OutputErrorType::Other
+            },
+        }
+    }
 }

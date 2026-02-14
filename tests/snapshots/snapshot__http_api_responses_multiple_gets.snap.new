@@ -1,0 +1,7 @@
+---
+source: tests/snapshot.rs
+assertion_line: 135
+expression: raw_output
+input_file: tests/http_api_responses/case1/bgp_neighbours.get
+---
+

@@ -22,6 +22,7 @@
 // These contain all the actual unit types grouped by shared functionality.
 pub(crate) mod bgp_tcp_in;
 pub(crate) mod bmp_tcp_in;
+pub(crate) mod bmp_tcp_out;
 mod mrt_file_in;
 pub(crate) mod rib_unit;
 pub use bmp_tcp_in::unit::TracingMode;
@@ -44,6 +45,9 @@ pub enum Unit {
 
     #[serde(rename = "bmp-tcp-in")]
     BmpTcpIn(bmp_tcp_in::unit::BmpTcpIn),
+
+    #[serde(rename = "bmp-tcp-out")]
+    BmpTcpOut(bmp_tcp_out::unit::BmpTcpOut),
 
     #[serde(rename = "rib")]
     RibUnit(rib_unit::unit::RibUnit),
@@ -69,6 +73,9 @@ impl Unit {
             Unit::BmpTcpIn(unit) => {
                 unit.run(component, gate, waitpoint).await
             }
+            Unit::BmpTcpOut(unit) => {
+                unit.run(component, gate, waitpoint).await
+            }
             Unit::RibUnit(unit) => unit.run(component, gate, waitpoint).await,
             Unit::MrtFileIn(unit) => {
                 unit.run(component, gate, waitpoint).await
@@ -83,6 +90,7 @@ impl Unit {
         match self {
             Unit::BgpTcpIn(_) => "bgp-tcp-in",
             Unit::BmpTcpIn(_) => "bmp-tcp-in",
+            Unit::BmpTcpOut(_) => "bmp-tcp-out",
             Unit::RibUnit(_) => "rib",
             Unit::MrtFileIn(_) => "mrt-file-in",
             Unit::RtrTcpIn(_) => "rtr-tcp-in",

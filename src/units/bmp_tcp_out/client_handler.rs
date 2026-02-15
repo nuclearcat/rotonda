@@ -34,10 +34,12 @@ pub async fn perform_initial_dump(
     ingress_register: &Arc<register::Register>,
     sys_name: &str,
     sys_descr: &str,
-    metrics: &Arc<BmpTcpOutMetrics>,
-    status_reporter: &Arc<BmpTcpOutStatusReporter>,
+    _metrics: &Arc<BmpTcpOutMetrics>,
+    _status_reporter: &Arc<BmpTcpOutStatusReporter>,
 ) -> bool {
-    status_reporter.dump_started(client.remote_addr);
+    // NOTE: The caller is responsible for calling dump_started() before
+    // and dump_completed()/dump_failed() after this function returns,
+    // to ensure the active_dumps gauge is always decremented.
 
     // 1. Send Initiation Message
     let init_msg = bmp_builder::build_initiation_message(sys_name, sys_descr);
@@ -120,8 +122,6 @@ pub async fn perform_initial_dump(
             }
         }
     }
-    status_reporter.dump_completed(client.remote_addr);
-
     true
 }
 

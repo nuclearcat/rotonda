@@ -347,6 +347,7 @@ impl BmpTcpOutRunner {
             client_addr,
             tx,
             self.max_client_buffer,
+            self.metrics.clone(),
         ));
 
         let client_id = client.id;
@@ -396,6 +397,8 @@ impl BmpTcpOutRunner {
         crate::tokio::spawn(
             &format!("bmp-out-dump[{}]", client_addr),
             async move {
+                status_reporter_for_dump.dump_started(client_addr);
+
                 // Resolve the RIB from the shared API at dump time,
                 // not at unit startup.
                 let rib = http_ng_api
@@ -417,11 +420,16 @@ impl BmpTcpOutRunner {
                     )
                     .await;
 
-                    if !success {
+                    if success {
+                        status_reporter_for_dump
+                            .dump_completed(client_addr);
+                    } else {
                         warn!(
                             "Initial dump failed for client {}",
                             client_addr
                         );
+                        status_reporter_for_dump
+                            .dump_failed(client_addr);
                     }
                 } else {
                     // No RIB available yet - just send initiation and go live
@@ -431,6 +439,7 @@ impl BmpTcpOutRunner {
                     );
                     client.send_message(init_msg).await;
                     client.set_live().await;
+                    status_reporter_for_dump.dump_completed(client_addr);
                 }
             },
         );

@@ -301,7 +301,8 @@ impl BmpTcpOutRunner {
                     match accept_result {
                         Ok((tcp_stream, client_addr)) => {
                             arc_self
-                                .handle_new_client(tcp_stream, client_addr);
+                                .handle_new_client(tcp_stream, client_addr)
+                                .await;
                         }
                         Err(err) => {
                             status_reporter.listener_io_error(err);
@@ -313,7 +314,7 @@ impl BmpTcpOutRunner {
     }
 
     /// Handle a newly connected BMP client.
-    fn handle_new_client(
+    async fn handle_new_client(
         self: &Arc<Self>,
         tcp_stream: tokio::net::TcpStream,
         client_addr: SocketAddr,
@@ -331,16 +332,11 @@ impl BmpTcpOutRunner {
 
         let client_id = client.id;
 
-        // Store client synchronously-ish (spawn a small task)
+        // Store client before starting dump/writer tasks to avoid missing
+        // direct_update events during initial dump setup.
         {
-            let clients = self.clients.clone();
-            let client_for_store = client.clone();
-            tokio::spawn(async move {
-                clients
-                    .write()
-                    .await
-                    .insert(client_id, client_for_store);
-            });
+            let mut clients = self.clients.write().await;
+            clients.insert(client_id, client.clone());
         }
 
         // Spawn writer task

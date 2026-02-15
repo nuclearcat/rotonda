@@ -100,23 +100,29 @@ pub async fn perform_initial_dump(
         }
     }
 
-    // 4. Transition to Live phase
-    client.set_live().await;
-    status_reporter.dump_completed(client.remote_addr);
-
-    // 5. Drain buffered updates
-    let buffered = client.take_buffered_updates().await;
-    debug!(
-        "Draining {} buffered updates for client {}",
-        buffered.len(),
-        client.remote_addr
-    );
-
-    for update in buffered {
-        if !send_update_to_client(client, &update, ingress_register).await {
-            return false;
+    // 4. Drain buffered updates while still in Dumping phase.
+    //    New updates keep being buffered until we transition to Live,
+    //    so we loop until the buffer is empty and then atomically go live.
+    loop {
+        let buffered = client.take_buffered_updates().await;
+        if buffered.is_empty() {
+            // No more buffered updates — transition to Live so new
+            // updates are sent directly instead of being buffered.
+            client.set_live().await;
+            break;
+        }
+        debug!(
+            "Draining {} buffered updates for client {}",
+            buffered.len(),
+            client.remote_addr
+        );
+        for update in buffered {
+            if !send_update_to_client(client, &update, ingress_register).await {
+                return false;
+            }
         }
     }
+    status_reporter.dump_completed(client.remote_addr);
 
     true
 }

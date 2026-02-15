@@ -104,11 +104,11 @@ fn write_per_peer_header(buf: &mut Vec<u8>, peer: &PeerInfo) {
     // Peer Distinguisher (8 bytes)
     buf.extend_from_slice(&peer.peer_distinguisher);
 
-    // Peer Address (16 bytes) - IPv4 mapped to ::ffff:x.x.x.x
+    // Peer Address (16 bytes) - 12 most-significant bytes zero for IPv4
+    // (RFC 7854 §4.2)
     match peer.peer_address {
         IpAddr::V4(v4) => {
-            buf.extend_from_slice(&[0u8; 10]);
-            buf.extend_from_slice(&[0xFF, 0xFF]);
+            buf.extend_from_slice(&[0u8; 12]);
             buf.extend_from_slice(&v4.octets());
         }
         IpAddr::V6(v6) => {

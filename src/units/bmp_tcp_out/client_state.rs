@@ -1,7 +1,10 @@
 use std::{
     collections::HashSet,
     net::SocketAddr,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use chrono::{DateTime, Utc};
@@ -10,6 +13,8 @@ use uuid::Uuid;
 
 use crate::ingress::IngressId;
 use crate::payload::Update;
+
+use super::metrics::BmpTcpOutMetrics;
 
 /// Phase of a connected BMP client.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +56,9 @@ pub struct ClientState {
 
     /// Maximum buffer size during dump phase.
     pub max_buffer: usize,
+
+    /// Global metrics shared across all clients.
+    pub global_metrics: Arc<BmpTcpOutMetrics>,
 }
 
 impl ClientState {
@@ -58,6 +66,7 @@ impl ClientState {
         remote_addr: SocketAddr,
         tx: mpsc::Sender<Vec<u8>>,
         max_buffer: usize,
+        global_metrics: Arc<BmpTcpOutMetrics>,
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -70,6 +79,7 @@ impl ClientState {
             messages_sent: AtomicUsize::new(0),
             bytes_sent: AtomicUsize::new(0),
             max_buffer,
+            global_metrics,
         }
     }
 
@@ -125,6 +135,12 @@ impl ClientState {
         if self.tx.send(msg).await.is_ok() {
             self.messages_sent.fetch_add(1, Ordering::Relaxed);
             self.bytes_sent.fetch_add(len, Ordering::Relaxed);
+            self.global_metrics
+                .messages_sent
+                .fetch_add(1, Ordering::Relaxed);
+            self.global_metrics
+                .bytes_sent
+                .fetch_add(len, Ordering::Relaxed);
             true
         } else {
             false

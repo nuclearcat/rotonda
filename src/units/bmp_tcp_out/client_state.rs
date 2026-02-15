@@ -117,6 +117,11 @@ impl ClientState {
         self.known_peers.write().await.insert(ingress_id);
     }
 
+    /// Mark peer as known and return true if it was not known before.
+    pub async fn register_known_peer_if_absent(&self, ingress_id: IngressId) -> bool {
+        self.known_peers.write().await.insert(ingress_id)
+    }
+
     /// Remove a peer from the known peers set.
     pub async fn remove_known_peer(&self, ingress_id: IngressId) -> bool {
         self.known_peers.write().await.remove(&ingress_id)

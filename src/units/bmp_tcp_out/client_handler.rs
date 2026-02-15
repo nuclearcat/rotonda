@@ -171,14 +171,14 @@ async fn send_payload_to_client(
     let ingress_id = payload.ingress_id;
 
     // Ensure we have sent Peer Up for this peer
-    if !client.has_known_peer(ingress_id).await {
+    if client.register_known_peer_if_absent(ingress_id).await {
         if let Some(info) = ingress_register.get(ingress_id) {
             let peer_info = PeerInfo::from_ingress_info(&info);
             let peer_up = bmp_builder::build_peer_up(&peer_info);
             if !client.send_message(peer_up).await {
+                client.remove_known_peer(ingress_id).await;
                 return false;
             }
-            client.add_known_peer(ingress_id).await;
         }
     }
 

@@ -294,6 +294,7 @@ pub fn build_route_monitoring(
 pub fn build_route_monitoring_from_route(
     peer: &PeerInfo,
     route: &RotondaRoute,
+    is_withdrawal: bool,
 ) -> Option<Vec<u8>> {
     let (prefix, pamap) = match route {
         RotondaRoute::Ipv4Unicast(nlri, pamap) => {
@@ -322,7 +323,7 @@ pub fn build_route_monitoring_from_route(
         }
     };
 
-    Some(build_route_monitoring(peer, prefix, pamap, false))
+    Some(build_route_monitoring(peer, prefix, pamap, is_withdrawal))
 }
 
 /// Build a BGP UPDATE message for a given prefix and path attributes.

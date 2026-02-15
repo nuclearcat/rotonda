@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use log::{debug, warn};
 
+use rotonda_store::prefix_record::RouteStatus;
+
 use crate::{
     ingress::{
         self,
@@ -190,7 +192,8 @@ async fn send_payload_to_client(
         }
     };
 
-    if let Some(msg) = bmp_builder::build_route_monitoring_from_route(&peer_info, &payload.rx_value)
+    let is_withdrawal = payload.route_status == RouteStatus::Withdrawn;
+    if let Some(msg) = bmp_builder::build_route_monitoring_from_route(&peer_info, &payload.rx_value, is_withdrawal)
     {
         client.send_message(msg).await
     } else {

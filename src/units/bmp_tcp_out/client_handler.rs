@@ -234,13 +234,15 @@ async fn send_peer_reappeared(
     if let Some(info) = ingress_register.get(ingress_id) {
         let peer_info = PeerInfo::from_ingress_info(&info);
 
-        // Send Peer Up
-        let peer_up = bmp_builder::build_peer_up(&peer_info);
-        if !client.send_message(peer_up).await {
-            return false;
+        // Only send Peer Up if this peer was not already known.
+        if client.register_known_peer_if_absent(ingress_id).await {
+            // Send Peer Up
+            let peer_up = bmp_builder::build_peer_up(&peer_info);
+            if !client.send_message(peer_up).await {
+                client.remove_known_peer(ingress_id).await;
+                return false;
+            }
         }
-
-        client.add_known_peer(ingress_id).await;
     }
     true
 }

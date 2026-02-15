@@ -100,11 +100,7 @@ pub async fn perform_initial_dump(
         }
     }
 
-    // 4. Transition to Live phase
-    client.set_live().await;
-    status_reporter.dump_completed(client.remote_addr);
-
-    // 5. Drain buffered updates
+    // 4. Drain buffered updates
     let buffered = client.take_buffered_updates().await;
     debug!(
         "Draining {} buffered updates for client {}",
@@ -117,6 +113,10 @@ pub async fn perform_initial_dump(
             return false;
         }
     }
+
+    // 5. Transition to Live phase after buffered updates are sent
+    client.set_live().await;
+    status_reporter.dump_completed(client.remote_addr);
 
     true
 }

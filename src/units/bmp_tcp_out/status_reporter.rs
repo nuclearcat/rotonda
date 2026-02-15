@@ -55,11 +55,6 @@ impl BmpTcpOutStatusReporter {
         self.metrics.active_dumps.fetch_sub(1, SeqCst);
     }
 
-    pub fn dump_failed(&self, client_addr: SocketAddr) {
-        sr_log!(warn: self, "Initial table dump failed for client {}", client_addr);
-        self.metrics.active_dumps.fetch_sub(1, SeqCst);
-    }
-
     pub fn buffer_overflow(&self, client_addr: SocketAddr) {
         sr_log!(warn: self, "Buffer overflow for client {}, disconnecting", client_addr);
         self.metrics.buffer_overflows.fetch_add(1, SeqCst);

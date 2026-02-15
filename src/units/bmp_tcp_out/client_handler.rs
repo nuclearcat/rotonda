@@ -34,12 +34,10 @@ pub async fn perform_initial_dump(
     ingress_register: &Arc<register::Register>,
     sys_name: &str,
     sys_descr: &str,
-    _metrics: &Arc<BmpTcpOutMetrics>,
-    _status_reporter: &Arc<BmpTcpOutStatusReporter>,
+    metrics: &Arc<BmpTcpOutMetrics>,
+    status_reporter: &Arc<BmpTcpOutStatusReporter>,
 ) -> bool {
-    // NOTE: The caller is responsible for calling dump_started() before
-    // and dump_completed()/dump_failed() after this function returns,
-    // to ensure the active_dumps gauge is always decremented.
+    status_reporter.dump_started(client.remote_addr);
 
     // 1. Send Initiation Message
     let init_msg = bmp_builder::build_initiation_message(sys_name, sys_descr);
@@ -102,26 +100,24 @@ pub async fn perform_initial_dump(
         }
     }
 
-    // 4. Drain buffered updates and atomically transition to Live.
-    //    drain_or_go_live() holds the buffer lock across the phase
-    //    transition, preventing updates from being lost in the gap.
-    loop {
-        let buffered = client.drain_or_go_live().await;
-        if buffered.is_empty() {
-            // drain_or_go_live() already set us to Live.
-            break;
-        }
-        debug!(
-            "Draining {} buffered updates for client {}",
-            buffered.len(),
-            client.remote_addr
-        );
-        for update in buffered {
-            if !send_update_to_client(client, &update, ingress_register).await {
-                return false;
-            }
+    // 4. Transition to Live phase
+    client.set_live().await;
+    status_reporter.dump_completed(client.remote_addr);
+
+    // 5. Drain buffered updates
+    let buffered = client.take_buffered_updates().await;
+    debug!(
+        "Draining {} buffered updates for client {}",
+        buffered.len(),
+        client.remote_addr
+    );
+
+    for update in buffered {
+        if !send_update_to_client(client, &update, ingress_register).await {
+            return false;
         }
     }
+
     true
 }
 

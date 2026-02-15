@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -24,10 +24,11 @@ use crate::{
         AnyDirectUpdate, DirectLink, DirectUpdate, Gate, GateStatus,
         Terminated,
     },
+    http_ng,
     ingress::register::Register,
     manager::{Component, WaitPoint},
     payload::Update,
-    units::{rib_unit::rib::Rib, Unit},
+    units::Unit,
 };
 
 use super::{
@@ -92,15 +93,12 @@ impl BmpTcpOut {
 
         let ingress_register = component.ingresses();
 
-        // Get a reference to the shared RIB via the http_ng API.
-        // The RibUnit sets the Rib reference on the http_ng::Api at startup.
-        // We clone the OnceLock so we can check it later when clients connect.
+        // Keep a shared reference to the HTTP API which holds the RIB.
+        // The RibUnit calls Api::set_rib() at startup, which may happen
+        // before or after this unit starts. By keeping the shared Api
+        // reference, we can resolve the RIB lazily when a client connects,
+        // avoiding a race where a cloned OnceLock stays empty forever.
         let http_ng_api = component.http_ng_api_arc();
-        let rib_ref: Arc<OnceLock<Arc<Rib>>> = {
-            let api = http_ng_api.lock().unwrap();
-            let state = api.cloned_api_state();
-            Arc::new(state.store)
-        };
 
         // Wait for other components to be ready
         gate.process_until(waitpoint.ready()).await?;
@@ -112,7 +110,7 @@ impl BmpTcpOut {
             self.sys_name,
             self.sys_descr,
             self.max_client_buffer,
-            rib_ref,
+            http_ng_api,
             ingress_register,
             metrics,
             status_reporter,
@@ -150,7 +148,7 @@ struct BmpTcpOutRunner {
     sys_name: String,
     sys_descr: String,
     max_client_buffer: usize,
-    rib_ref: Arc<OnceLock<Arc<Rib>>>,
+    http_ng_api: Arc<Mutex<http_ng::Api>>,
     ingress_register: Arc<Register>,
     metrics: Arc<BmpTcpOutMetrics>,
     status_reporter: Arc<BmpTcpOutStatusReporter>,
@@ -205,7 +203,7 @@ impl BmpTcpOutRunner {
         sys_name: String,
         sys_descr: String,
         max_client_buffer: usize,
-        rib_ref: Arc<OnceLock<Arc<Rib>>>,
+        http_ng_api: Arc<Mutex<http_ng::Api>>,
         ingress_register: Arc<Register>,
         metrics: Arc<BmpTcpOutMetrics>,
         status_reporter: Arc<BmpTcpOutStatusReporter>,
@@ -216,7 +214,7 @@ impl BmpTcpOutRunner {
             sys_name,
             sys_descr,
             max_client_buffer,
-            rib_ref,
+            http_ng_api,
             ingress_register,
             metrics,
             status_reporter,
@@ -370,8 +368,9 @@ impl BmpTcpOutRunner {
             },
         );
 
-        // Spawn dump task
-        let rib_ref = self.rib_ref.clone();
+        // Spawn dump task — resolve the RIB lazily so that late
+        // RibUnit initialization is visible.
+        let http_ng_api = self.http_ng_api.clone();
         let ingress_register = self.ingress_register.clone();
         let sys_name = self.sys_name.clone();
         let sys_descr = self.sys_descr.clone();
@@ -381,10 +380,19 @@ impl BmpTcpOutRunner {
         crate::tokio::spawn(
             &format!("bmp-out-dump[{}]", client_addr),
             async move {
-                if let Some(rib) = rib_ref.get() {
+                // Resolve the RIB from the shared API at dump time,
+                // not at unit startup.
+                let rib = http_ng_api
+                    .lock()
+                    .ok()
+                    .and_then(|api| {
+                        api.cloned_api_state().store.get().cloned()
+                    });
+
+                if let Some(rib) = rib {
                     let success = client_handler::perform_initial_dump(
                         &client,
-                        rib,
+                        &rib,
                         &ingress_register,
                         &sys_name,
                         &sys_descr,

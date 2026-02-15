@@ -84,20 +84,39 @@ impl ClientState {
     }
 
     /// Buffer an update during dump phase.
-    /// Returns false if the buffer is full (client should be disconnected).
-    pub async fn buffer_update(&self, update: Update) -> bool {
+    ///
+    /// Returns `Some(true)` if buffered successfully, `Some(false)` if the
+    /// buffer is full (client should be disconnected), or `None` if the
+    /// client transitioned to live while we were waiting for the lock
+    /// (caller should send the update directly).
+    pub async fn buffer_update(&self, update: Update) -> Option<bool> {
         let mut buf = self.dump_buffer.lock().await;
+        // Recheck phase while holding the buffer lock to prevent a race
+        // with drain_or_go_live(), which sets phase to Live while holding
+        // the same lock.
+        if *self.phase.read().await != ClientPhase::Dumping {
+            return None;
+        }
         if buf.len() >= self.max_buffer {
-            return false;
+            return Some(false);
         }
         buf.push(update);
-        true
+        Some(true)
     }
 
-    /// Take all buffered updates (drain the buffer).
-    pub async fn take_buffered_updates(&self) -> Vec<Update> {
+    /// Drain buffered updates, or atomically transition to live if the
+    /// buffer is empty.
+    ///
+    /// Holds the `dump_buffer` lock across the phase transition so that
+    /// concurrent `buffer_update()` calls cannot sneak an update into the
+    /// buffer after we observed it empty but before we go live.
+    pub async fn drain_or_go_live(&self) -> Vec<Update> {
         let mut buf = self.dump_buffer.lock().await;
-        std::mem::take(&mut *buf)
+        let updates = std::mem::take(&mut *buf);
+        if updates.is_empty() {
+            *self.phase.write().await = ClientPhase::Live;
+        }
+        updates
     }
 
     /// Send a BMP message to this client.

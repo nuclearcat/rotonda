@@ -162,11 +162,30 @@ impl DirectUpdate for BmpTcpOutRunner {
         for (_id, client) in clients.iter() {
             if client.is_dumping().await {
                 // Buffer updates during initial dump
-                if !client.buffer_update(update.clone()).await {
-                    // Buffer overflow — mark for disconnect
-                    self.status_reporter.buffer_overflow(client.remote_addr);
-                    // Signal disconnect by closing the channel
-                    let _ = client.tx.send(Vec::new()).await;
+                match client.buffer_update(update.clone()).await {
+                    Some(true) => {} // buffered ok
+                    Some(false) => {
+                        // Buffer overflow — mark for disconnect
+                        self.status_reporter.buffer_overflow(client.remote_addr);
+                        // Signal disconnect by closing the channel
+                        let _ = client.tx.send(Vec::new()).await;
+                    }
+                    None => {
+                        // Client went live between is_dumping() and
+                        // buffer_update() — send directly instead.
+                        if !client_handler::send_update_to_client(
+                            client,
+                            &update,
+                            &self.ingress_register,
+                        )
+                        .await
+                        {
+                            debug!(
+                                "Failed to send update to client {}, will be cleaned up",
+                                client.remote_addr
+                            );
+                        }
+                    }
                 }
             } else {
                 // Live phase — send directly
@@ -301,7 +320,8 @@ impl BmpTcpOutRunner {
                     match accept_result {
                         Ok((tcp_stream, client_addr)) => {
                             arc_self
-                                .handle_new_client(tcp_stream, client_addr);
+                                .handle_new_client(tcp_stream, client_addr)
+                                .await;
                         }
                         Err(err) => {
                             status_reporter.listener_io_error(err);
@@ -313,7 +333,7 @@ impl BmpTcpOutRunner {
     }
 
     /// Handle a newly connected BMP client.
-    fn handle_new_client(
+    async fn handle_new_client(
         self: &Arc<Self>,
         tcp_stream: tokio::net::TcpStream,
         client_addr: SocketAddr,
@@ -331,17 +351,13 @@ impl BmpTcpOutRunner {
 
         let client_id = client.id;
 
-        // Store client synchronously-ish (spawn a small task)
-        {
-            let clients = self.clients.clone();
-            let client_for_store = client.clone();
-            tokio::spawn(async move {
-                clients
-                    .write()
-                    .await
-                    .insert(client_id, client_for_store);
-            });
-        }
+        // Insert client into map before spawning tasks so that
+        // direct_update() can see it immediately and writer cleanup
+        // cannot race ahead of the insert.
+        self.clients
+            .write()
+            .await
+            .insert(client_id, client.clone());
 
         // Spawn writer task
         let status_reporter = self.status_reporter.clone();

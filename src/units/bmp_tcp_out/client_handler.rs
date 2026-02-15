@@ -100,15 +100,13 @@ pub async fn perform_initial_dump(
         }
     }
 
-    // 4. Drain buffered updates while still in Dumping phase.
-    //    New updates keep being buffered until we transition to Live,
-    //    so we loop until the buffer is empty and then atomically go live.
+    // 4. Drain buffered updates and atomically transition to Live.
+    //    drain_or_go_live() holds the buffer lock across the phase
+    //    transition, preventing updates from being lost in the gap.
     loop {
-        let buffered = client.take_buffered_updates().await;
+        let buffered = client.drain_or_go_live().await;
         if buffered.is_empty() {
-            // No more buffered updates — transition to Live so new
-            // updates are sent directly instead of being buffered.
-            client.set_live().await;
+            // drain_or_go_live() already set us to Live.
             break;
         }
         debug!(

@@ -376,8 +376,6 @@ impl BmpTcpOutRunner {
         crate::tokio::spawn(
             &format!("bmp-out-dump[{}]", client_addr),
             async move {
-                status_reporter_for_dump.dump_started(client_addr);
-
                 // Resolve the RIB from the shared API at dump time,
                 // not at unit startup.
                 let rib = http_ng_api

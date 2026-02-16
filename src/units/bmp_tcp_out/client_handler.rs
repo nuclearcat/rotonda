@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
-use log::{debug, warn};
+use log::{debug, info, warn};
 
 use rotonda_store::prefix_record::RouteStatus;
 
@@ -13,6 +15,7 @@ use crate::{
     payload::{Payload, RotondaRoute, Update},
     units::rib_unit::rib::Rib,
 };
+use routecore::bgp::types::AfiSafiType;
 
 use super::{
     bmp_builder::{self, PeerInfo},
@@ -49,20 +52,40 @@ pub async fn perform_initial_dump(
     let peers = {
         let mut all_peers = Vec::new();
         for ingress_type in [IngressType::BgpViaBmp, IngressType::Bgp] {
+            let type_name = format!("{:?}", ingress_type);
             let filter = QueryFilter {
                 ingress_type: Some(ingress_type),
                 ..Default::default()
             };
-            all_peers.extend(ingress_register.search(filter));
+            let found = ingress_register.search(filter);
+            info!(
+                "bmp-out dump for {}: found {} peers of type {}",
+                client.remote_addr,
+                found.len(),
+                type_name,
+            );
+            all_peers.extend(found);
         }
         all_peers
     };
 
+    info!(
+        "bmp-out dump for {}: total {} peers to dump",
+        client.remote_addr,
+        peers.len()
+    );
+
     // 3. For each peer, send Peer Up + routes
+    let dump_start = Instant::now();
+    let bytes_before_dump = client.bytes_sent.load(Ordering::Relaxed);
+    let mut total_routes: usize = 0;
     for peer_entry in &peers {
         let ingress_id = peer_entry.ingress_id;
         let info = &peer_entry.ingress_info;
         let peer_info = PeerInfo::from_ingress_info(info);
+
+        let peer_start = Instant::now();
+        let bytes_before_peer = client.bytes_sent.load(Ordering::Relaxed);
 
         // Send Peer Up
         let peer_up_msg = bmp_builder::build_peer_up(&peer_info);
@@ -73,10 +96,19 @@ pub async fn perform_initial_dump(
         client.add_known_peer(ingress_id).await;
 
         // Query RIB for all routes from this peer
+        let mut peer_route_count: usize = 0;
+        let mut has_ipv4 = false;
+        let mut has_ipv6 = false;
         match rib.match_ingress_id(ingress_id) {
             Ok(prefix_records) => {
                 for record in prefix_records {
                     let prefix = record.prefix;
+                    if prefix.is_v4() {
+                        has_ipv4 = true;
+                    } else {
+                        has_ipv6 = true;
+                    }
+
                     for route_record in record.meta {
                         let pamap = &route_record.meta;
                         let msg = bmp_builder::build_route_monitoring(
@@ -85,6 +117,7 @@ pub async fn perform_initial_dump(
                             pamap,
                             false,
                         );
+                        peer_route_count += 1;
                         if !client.send_message(msg).await {
                             return false;
                         }
@@ -98,7 +131,55 @@ pub async fn perform_initial_dump(
                 );
             }
         }
+
+        if has_ipv4 {
+            if let Some(msg) =
+                bmp_builder::build_end_of_rib_marker(
+                    &peer_info,
+                    AfiSafiType::Ipv4Unicast,
+                )
+            {
+                if !client.send_message(msg).await {
+                    return false;
+                }
+            }
+        }
+
+        if has_ipv6 {
+            if let Some(msg) =
+                bmp_builder::build_end_of_rib_marker(
+                    &peer_info,
+                    AfiSafiType::Ipv6Unicast,
+                )
+            {
+                if !client.send_message(msg).await {
+                    return false;
+                }
+            }
+        }
+        let peer_bytes = client.bytes_sent.load(Ordering::Relaxed) - bytes_before_peer;
+        let peer_elapsed = peer_start.elapsed();
+        info!(
+            "bmp-out dump for {}: peer ingress_id={} sent {} routes, {:.2} MB in {:.2}s",
+            client.remote_addr,
+            ingress_id,
+            peer_route_count,
+            peer_bytes as f64 / (1024.0 * 1024.0),
+            peer_elapsed.as_secs_f64(),
+        );
+        total_routes += peer_route_count;
     }
+
+    let dump_bytes = client.bytes_sent.load(Ordering::Relaxed) - bytes_before_dump;
+    let dump_elapsed = dump_start.elapsed();
+    info!(
+        "bmp-out dump for {}: dump complete, {} peers, {} total routes, {:.2} MB in {:.2}s",
+        client.remote_addr,
+        peers.len(),
+        total_routes,
+        dump_bytes as f64 / (1024.0 * 1024.0),
+        dump_elapsed.as_secs_f64(),
+    );
 
     // 4. Drain buffered updates
     let buffered = client.take_buffered_updates().await;

@@ -7,6 +7,7 @@ use std::net::IpAddr;
 use inetnum::addr::Prefix;
 use inetnum::asn::Asn;
 use routecore::bgp::nlri::afisafi::IsPrefix;
+use routecore::bgp::types::AfiSafiType;
 use routecore::bmp::message::PeerType;
 
 use crate::ingress::IngressInfo;
@@ -325,6 +326,24 @@ pub fn build_route_monitoring_from_route(
     Some(build_route_monitoring(peer, prefix, pamap, is_withdrawal))
 }
 
+/// Build a BMP Route Monitoring message representing an End-of-RIB marker for
+/// the given AFI/SAFI.
+///
+/// For IPv4 unicast, this is the minimum-length BGP UPDATE (no withdrawn,
+/// no path attributes, total length 23).
+/// For other AFI/SAFIs, this is an MP_UNREACH_NLRI marker with an empty
+/// withdrawal list for that family.
+pub fn build_end_of_rib_marker(
+    peer: &PeerInfo,
+    afisafi: AfiSafiType,
+) -> Option<Vec<u8>> {
+    match afisafi {
+        AfiSafiType::Ipv4Unicast => Some(build_eor_ipv4(peer)),
+        AfiSafiType::Ipv6Unicast => Some(build_eor_mp_unreach(peer, afisafi)),
+        _ => None,
+    }
+}
+
 /// Build a BGP UPDATE message for a given prefix and path attributes.
 ///
 /// Uses the raw path attributes from RotondaPaMap, filtering out
@@ -491,6 +510,41 @@ fn encode_prefix_nlri(prefix: Prefix) -> Vec<u8> {
         }
     }
 
+    buf
+}
+
+fn build_eor_ipv4(_peer: &PeerInfo) -> Vec<u8> {
+    let total_len = 23;
+    let mut buf = Vec::with_capacity(total_len);
+    write_common_header(&mut buf, BMP_MSG_ROUTE_MONITORING, total_len as u32);
+    write_per_peer_header(
+        &mut buf,
+        &_peer
+    );
+    buf.extend_from_slice(&0u16.to_be_bytes()); // Withdrawn Routes Length = 0
+    buf.extend_from_slice(&0u16.to_be_bytes()); // Path Attribute Length = 0
+    buf
+}
+
+fn build_eor_mp_unreach(_peer: &PeerInfo, afisafi: AfiSafiType) -> Vec<u8> {
+    let (afi, safi) = afisafi.into();
+
+    let mut mp_unreach = Vec::with_capacity(3);
+    mp_unreach.push(0x80); // Optional
+    mp_unreach.push(15); // MP_UNREACH_NLRI
+    mp_unreach.push(3); // Length
+    mp_unreach.extend_from_slice(&afi.to_be_bytes());
+    mp_unreach.push(safi);
+
+    let total_pa_len = mp_unreach.len();
+    let update_body_len = 2 + 2 + total_pa_len;
+    let total_len = 19 + update_body_len;
+    let mut buf = Vec::with_capacity(total_len);
+    write_common_header(&mut buf, BMP_MSG_ROUTE_MONITORING, total_len as u32);
+    write_per_peer_header(&mut buf, _peer);
+    buf.extend_from_slice(&0u16.to_be_bytes()); // Withdrawn Routes Length = 0
+    buf.extend_from_slice(&(total_pa_len as u16).to_be_bytes());
+    buf.extend_from_slice(&mp_unreach);
     buf
 }
 

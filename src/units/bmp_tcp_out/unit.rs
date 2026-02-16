@@ -378,12 +378,26 @@ impl BmpTcpOutRunner {
             async move {
                 // Resolve the RIB from the shared API at dump time,
                 // not at unit startup.
-                let rib = http_ng_api
-                    .lock()
-                    .ok()
-                    .and_then(|api| {
-                        api.cloned_api_state().store.get().cloned()
-                    });
+                let rib = match http_ng_api.lock() {
+                    Ok(api) => {
+                        let state = api.cloned_api_state();
+                        let r = state.store.get().cloned();
+                        if r.is_none() {
+                            warn!(
+                                "RIB OnceLock not set for client {} dump",
+                                client_addr
+                            );
+                        }
+                        r
+                    }
+                    Err(e) => {
+                        warn!(
+                            "http_ng_api mutex poisoned for client {} dump: {}",
+                            client_addr, e
+                        );
+                        None
+                    }
+                };
                 if let Some(rib) = rib {
                     let success = client_handler::perform_initial_dump(
                         &client,

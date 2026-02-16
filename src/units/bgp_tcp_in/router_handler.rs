@@ -431,6 +431,7 @@ impl Processor {
                             self.ingresses.update_info(
                                 session_ingress_id,
                                 ingress::IngressInfo::new()
+                                    .with_ingress_type(ingress::IngressType::Bgp)
                                     .with_name("some-bgp-session".to_string())
                                     .with_remote_addr(negotiated.remote_addr())
                                     .with_remote_asn(negotiated.remote_asn())

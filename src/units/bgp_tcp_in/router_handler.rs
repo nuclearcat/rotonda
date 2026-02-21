@@ -16,6 +16,7 @@ use routecore::bgp::message::{Message as BgpMsg, UpdateMessage};
 use smallvec::{smallvec, SmallVec};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 
 use routecore::bgp::fsm::session::{
     self,
@@ -88,6 +89,10 @@ struct Processor {
     /// The 'overall' IngressId for the BGP-IN unit.
     ingress_id: ingress::IngressId,
 
+    /// Handle to abort this connection's task during collision resolution.
+    /// Populated after the task is spawned.
+    abort_handle: Arc<Mutex<Option<AbortHandle>>>,
+
     // Link to an empty RtrCache for now. Eventually, this should point to the
     // main all-encompassing RIB.
     #[allow(dead_code)]
@@ -106,6 +111,7 @@ impl Processor {
         status_reporter: Arc<BgpTcpInStatusReporter>,
         ingresses: Arc<ingress::Register>,
         ingress_id: ingress::IngressId,
+        abort_handle: Arc<Mutex<Option<AbortHandle>>>,
     ) -> Self {
         Processor {
             roto_function,
@@ -118,6 +124,7 @@ impl Processor {
             status_reporter,
             ingresses,
             ingress_id,
+            abort_handle,
             rtr_cache: Default::default(),
         }
     }
@@ -140,6 +147,7 @@ impl Processor {
             status_reporter: Default::default(),
             ingresses: Arc::new(ingress::Register::default()),
             ingress_id: 0,
+            abort_handle: Arc::new(Mutex::new(None)),
             rtr_cache: Default::default(),
         };
 
@@ -421,27 +429,34 @@ impl Processor {
                             // RFC 4486 Section 4), but routecore's DisconnectReason
                             // lacks that variant, so we use ConnectionRejected
                             // (subcode 5) as the closest match.
-                            let old_cmd_tx = {
+                            let old_entry = {
                                 let mut ls = live_sessions.lock().unwrap();
-                                ls.remove(&key).map(|(_id, tx, _pdu)| tx)
+                                ls.remove(&key)
                             };
-                            if let Some(old_tx) = old_cmd_tx {
+                            if let Some((_id, old_abort, old_tx, _pdu)) = old_entry {
                                 warn!(
                                     "Replacing existing session for {:?} — \
                                      peer likely restarted (RFC 4271 §6.8)",
                                     key
                                 );
+                                // Try a graceful disconnect first, then force-abort
+                                // the old task to ensure the zombie TCP connection
+                                // is closed even if routecore's FSM is stuck.
                                 let _ = old_tx.send(Command::Disconnect(
                                     DisconnectReason::ConnectionRejected
                                 )).await;
+                                old_abort.abort();
                             }
 
-                            // Insert the new session
+                            // Insert the new session with our abort handle
+                            let my_abort = self.abort_handle.lock().unwrap()
+                                .clone()
+                                .expect("abort_handle must be set before SessionNegotiated");
                             {
                             let mut live_sessions = live_sessions.lock().unwrap();
                             live_sessions.insert(
                                 key,
-                                (sid, self.tx.clone(), self.pdu_out_tx.clone())
+                                (sid, my_abort, self.tx.clone(), self.pdu_out_tx.clone())
                             );
                             debug!(
                                 "inserted into live_sessions (current count: {})",
@@ -481,7 +496,7 @@ impl Processor {
         let should_withdraw = if let (Some(sid), Some(negotiated)) = (my_session_id, session.negotiated()) {
             let key = (negotiated.remote_addr(), negotiated.remote_asn());
             let mut ls = live_sessions.lock().unwrap();
-            if ls.get(&key).map(|(id, _, _)| *id) == Some(sid) {
+            if ls.get(&key).map(|(id, _, _, _)| *id) == Some(sid) {
                 ls.remove(&key);
                 debug!(
                     "removed {}@{} from live_sessions (current count: {})",
@@ -595,6 +610,7 @@ pub async fn handle_connection(
     live_sessions: Arc<Mutex<super::unit::LiveSessions>>,
     ingresses: Arc<ingress::Register>,
     connector_ingress_id: ingress::IngressId,
+    abort_handle: Arc<Mutex<Option<AbortHandle>>>,
 ) {
     // NB: when testing with an FRR instance configured with
     //  "neighbor 1.2.3.4 timers delayopen 15"
@@ -656,6 +672,7 @@ pub async fn handle_connection(
         status_reporter,
         ingresses,
         connector_ingress_id,
+        abort_handle,
     );
 
     tokio::spawn(async move {

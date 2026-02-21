@@ -18,6 +18,7 @@ pub struct BmpTcpOutMetrics {
     pub bytes_sent: Arc<AtomicUsize>,
     pub active_dumps: Arc<AtomicUsize>,
     pub buffer_overflows: Arc<AtomicUsize>,
+    pub acl_rejected: Arc<AtomicUsize>,
 }
 
 impl GraphStatus for BmpTcpOutMetrics {
@@ -82,6 +83,12 @@ impl BmpTcpOutMetrics {
         MetricType::Counter,
         MetricUnit::Total,
     );
+    const ACL_REJECTED_METRIC: Metric = Metric::new(
+        "bmp_tcp_out_acl_rejected",
+        "the number of connections rejected by ACL",
+        MetricType::Counter,
+        MetricUnit::Total,
+    );
 
     pub fn new(gate: &Gate) -> Self {
         Self {
@@ -131,6 +138,11 @@ impl metrics::Source for BmpTcpOutMetrics {
             &Self::BUFFER_OVERFLOWS_METRIC,
             Some(unit_name),
             self.buffer_overflows.load(SeqCst),
+        );
+        target.append_simple(
+            &Self::ACL_REJECTED_METRIC,
+            Some(unit_name),
+            self.acl_rejected.load(SeqCst),
         );
     }
 }

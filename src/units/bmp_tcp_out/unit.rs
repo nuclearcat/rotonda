@@ -29,6 +29,7 @@ use crate::{
     manager::{Component, WaitPoint},
     payload::Update,
     units::Unit,
+    units::bgp_tcp_in::peer_config::PrefixOrExact,
 };
 
 use super::{
@@ -70,6 +71,16 @@ pub struct BmpTcpOut {
     /// Maximum buffered updates per client during dump phase.
     #[serde(default = "BmpTcpOut::default_max_client_buffer")]
     pub max_client_buffer: usize,
+
+    /// ACL: list of allowed IP prefixes/addresses (required).
+    /// Only IPs matching at least one entry are allowed to connect.
+    /// Supports exact IPs and CIDR prefixes, both IPv4 and IPv6.
+    /// Use "0.0.0.0/0" and/or "::/0" as wildcards to allow all.
+    /// Examples:
+    ///   acl = ["0.0.0.0/0", "::/0"]              # allow all
+    ///   acl = ["10.0.0.0/8", "2001:db8::/32"]     # restrict to specific ranges
+    ///   acl = ["192.168.1.1", "fd00::1"]           # restrict to exact IPs
+    pub acl: Vec<PrefixOrExact>,
 }
 
 impl BmpTcpOut {
@@ -110,6 +121,7 @@ impl BmpTcpOut {
             self.sys_name,
             self.sys_descr,
             self.max_client_buffer,
+            self.acl,
             http_ng_api,
             ingress_register,
             metrics,
@@ -148,6 +160,7 @@ struct BmpTcpOutRunner {
     sys_name: String,
     sys_descr: String,
     max_client_buffer: usize,
+    acl: Vec<PrefixOrExact>,
     http_ng_api: Arc<Mutex<http_ng::Api>>,
     ingress_register: Arc<Register>,
     metrics: Arc<BmpTcpOutMetrics>,
@@ -203,6 +216,7 @@ impl BmpTcpOutRunner {
         sys_name: String,
         sys_descr: String,
         max_client_buffer: usize,
+        acl: Vec<PrefixOrExact>,
         http_ng_api: Arc<Mutex<http_ng::Api>>,
         ingress_register: Arc<Register>,
         metrics: Arc<BmpTcpOutMetrics>,
@@ -214,6 +228,7 @@ impl BmpTcpOutRunner {
             sys_name,
             sys_descr,
             max_client_buffer,
+            acl,
             http_ng_api,
             ingress_register,
             metrics,
@@ -300,6 +315,13 @@ impl BmpTcpOutRunner {
                 futures::future::Either::Right((accept_result, _)) => {
                     match accept_result {
                         Ok((tcp_stream, client_addr)) => {
+                            let ip = client_addr.ip();
+                            if !arc_self.acl.iter().any(|entry| entry.contains(ip)) {
+                                warn!("ACL rejected connection from {}", client_addr);
+                                status_reporter.acl_rejected(client_addr);
+                                drop(tcp_stream);
+                                continue;
+                            }
                             arc_self
                                 .handle_new_client(tcp_stream, client_addr)
                                 .await;

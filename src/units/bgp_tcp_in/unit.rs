@@ -23,6 +23,7 @@ use routecore::bgp::message::{
 
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 use tokio::time::sleep;
 
 use crate::common::net::{
@@ -186,7 +187,7 @@ pub static SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub type LiveSessions = HashMap<
     (IpAddr, Asn),
-    (u64, mpsc::Sender<Command>, mpsc::Sender<BgpMsg<Bytes>>),
+    (u64, AbortHandle, mpsc::Sender<Command>, mpsc::Sender<BgpMsg<Bytes>>),
 >;
 
 //#[derive(Debug)]
@@ -562,7 +563,7 @@ impl DirectUpdate for BgpTcpInRunner {
                 let chans = {
                     self.live_sessions.lock().unwrap().clone().into_values()
                 };
-                for (_session_id, cmd_tx, pdu_out_tx) in chans {
+                for (_session_id, _abort, cmd_tx, pdu_out_tx) in chans {
                     //debug!(
                     //    "emitting Command::RawUpdate, chan cap {}",
                     //    chan.capacity()
@@ -644,7 +645,10 @@ impl ConfigAcceptor for BgpTcpInRunner {
                 }
             }
         }
-        crate::tokio::spawn(
+        let abort_handle: Arc<Mutex<Option<AbortHandle>>> =
+            Arc::new(Mutex::new(None));
+        let abort_handle_clone = abort_handle.clone();
+        let jh = crate::tokio::spawn(
             &child_name,
             handle_connection(
                 roto_function,
@@ -659,8 +663,10 @@ impl ConfigAcceptor for BgpTcpInRunner {
                 live_sessions,
                 ingresses,
                 connector_ingress_id,
+                abort_handle_clone,
             ),
         );
+        *abort_handle.lock().unwrap() = Some(jh.abort_handle());
     }
 }
 

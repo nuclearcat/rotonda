@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{future::select, pin_mut};
-use log::{debug, warn};
+use log::{debug, error, warn};
 use non_empty_vec::NonEmpty;
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr};
@@ -38,6 +38,7 @@ use super::{
     client_state::ClientState,
     metrics::BmpTcpOutMetrics,
     status_reporter::BmpTcpOutStatusReporter,
+    tls,
 };
 
 //-------- BmpTcpOut config --------------------------------------------------
@@ -81,6 +82,18 @@ pub struct BmpTcpOut {
     ///   acl = ["10.0.0.0/8", "2001:db8::/32"]     # restrict to specific ranges
     ///   acl = ["192.168.1.1", "fd00::1"]           # restrict to exact IPs
     pub acl: Vec<PrefixOrExact>,
+
+    /// Enable TLS encryption for client connections. Default: false.
+    #[serde(default)]
+    pub tls: bool,
+
+    /// Path to PEM certificate file. If omitted with tls=true, a self-signed cert is generated.
+    #[serde(default)]
+    pub tls_cert: Option<String>,
+
+    /// Path to PEM private key file. Required if tls_cert is set.
+    #[serde(default)]
+    pub tls_key: Option<String>,
 }
 
 impl BmpTcpOut {
@@ -90,6 +103,20 @@ impl BmpTcpOut {
         gate: Gate,
         mut waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
+        // Validate TLS configuration
+        if self.tls_cert.is_some() != self.tls_key.is_some() {
+            log::error!(
+                "BmpTcpOut: tls_cert and tls_key must both be set or both be omitted"
+            );
+            return Err(Terminated);
+        }
+        if !self.tls && (self.tls_cert.is_some() || self.tls_key.is_some()) {
+            log::error!(
+                "BmpTcpOut: tls_cert/tls_key are set but tls is not enabled"
+            );
+            return Err(Terminated);
+        }
+
         let unit_name = component.name().clone();
 
         // Setup metrics
@@ -122,6 +149,9 @@ impl BmpTcpOut {
             self.sys_descr,
             self.max_client_buffer,
             self.acl,
+            self.tls,
+            self.tls_cert,
+            self.tls_key,
             http_ng_api,
             ingress_register,
             metrics,
@@ -154,6 +184,9 @@ impl BmpTcpOut {
 
 //-------- BmpTcpOutRunner ---------------------------------------------------
 
+/// Type alias for a boxed async writer (plain TCP or TLS).
+type BoxedAsyncWrite = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+
 struct BmpTcpOutRunner {
     gate: Arc<Gate>,
     listen: Arc<SocketAddr>,
@@ -161,6 +194,9 @@ struct BmpTcpOutRunner {
     sys_descr: String,
     max_client_buffer: usize,
     acl: Vec<PrefixOrExact>,
+    tls: bool,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
     http_ng_api: Arc<Mutex<http_ng::Api>>,
     ingress_register: Arc<Register>,
     metrics: Arc<BmpTcpOutMetrics>,
@@ -217,6 +253,9 @@ impl BmpTcpOutRunner {
         sys_descr: String,
         max_client_buffer: usize,
         acl: Vec<PrefixOrExact>,
+        tls: bool,
+        tls_cert: Option<String>,
+        tls_key: Option<String>,
         http_ng_api: Arc<Mutex<http_ng::Api>>,
         ingress_register: Arc<Register>,
         metrics: Arc<BmpTcpOutMetrics>,
@@ -229,6 +268,9 @@ impl BmpTcpOutRunner {
             sys_descr,
             max_client_buffer,
             acl,
+            tls,
+            tls_cert,
+            tls_key,
             http_ng_api,
             ingress_register,
             metrics,
@@ -264,6 +306,27 @@ impl BmpTcpOutRunner {
         };
 
         status_reporter.listener_listening(&listen_addr.to_string());
+
+        // Build TLS acceptor if TLS is enabled
+        let tls_acceptor: Option<tokio_rustls::TlsAcceptor> = if arc_self.tls {
+            let is_self_signed = arc_self.tls_cert.is_none();
+            match tls::build_tls_acceptor(
+                arc_self.tls_cert.as_deref(),
+                arc_self.tls_key.as_deref(),
+                &listen_addr,
+            ) {
+                Ok(acceptor) => {
+                    status_reporter.tls_enabled(&listen_addr.to_string(), is_self_signed);
+                    Some(acceptor)
+                }
+                Err(e) => {
+                    error!("Failed to initialize TLS: {}", e);
+                    return Err(Terminated);
+                }
+            }
+        } else {
+            None
+        };
 
         // Main accept loop
         loop {
@@ -322,9 +385,49 @@ impl BmpTcpOutRunner {
                                 drop(tcp_stream);
                                 continue;
                             }
-                            arc_self
-                                .handle_new_client(tcp_stream, client_addr)
-                                .await;
+
+                            if let Some(ref acceptor) = tls_acceptor {
+                                // Spawn TLS handshake off the accept loop so a
+                                // slow/stalled client cannot block new accepts or
+                                // gate processing.
+                                let acceptor = acceptor.clone();
+                                let arc_self = arc_self.clone();
+                                let status_reporter = status_reporter.clone();
+                                crate::tokio::spawn(
+                                    &format!("bmp-out-tls-handshake[{}]", client_addr),
+                                    async move {
+                                        match tokio::time::timeout(
+                                            Duration::from_secs(10),
+                                            acceptor.accept(tcp_stream),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(tls_stream)) => {
+                                                let (_reader, writer) = tokio::io::split(tls_stream);
+                                                let writer: BoxedAsyncWrite = Box::new(writer);
+                                                arc_self
+                                                    .handle_new_client(writer, client_addr)
+                                                    .await;
+                                            }
+                                            Ok(Err(e)) => {
+                                                status_reporter.tls_handshake_error(client_addr, e);
+                                            }
+                                            Err(_) => {
+                                                status_reporter.tls_handshake_error(
+                                                    client_addr,
+                                                    "handshake timeout (10s)",
+                                                );
+                                            }
+                                        }
+                                    },
+                                );
+                            } else {
+                                let (_reader, writer) = tcp_stream.into_split();
+                                let writer: BoxedAsyncWrite = Box::new(writer);
+                                arc_self
+                                    .handle_new_client(writer, client_addr)
+                                    .await;
+                            };
                         }
                         Err(err) => {
                             status_reporter.listener_io_error(err);
@@ -338,7 +441,7 @@ impl BmpTcpOutRunner {
     /// Handle a newly connected BMP client.
     async fn handle_new_client(
         self: &Arc<Self>,
-        tcp_stream: tokio::net::TcpStream,
+        writer: BoxedAsyncWrite,
         client_addr: SocketAddr,
     ) {
         self.status_reporter.client_connected(client_addr);
@@ -365,7 +468,7 @@ impl BmpTcpOutRunner {
         let status_reporter = self.status_reporter.clone();
         let clients_for_writer = self.clients.clone();
 
-        let (_reader, mut writer) = tcp_stream.into_split();
+        let mut writer = writer;
 
         crate::tokio::spawn(
             &format!("bmp-out-writer[{}]", client_addr),

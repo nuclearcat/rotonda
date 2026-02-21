@@ -3,5 +3,6 @@ mod client_handler;
 mod client_state;
 mod metrics;
 mod status_reporter;
+mod tls;
 
 pub mod unit;

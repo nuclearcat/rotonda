@@ -80,6 +80,10 @@ csv                = "1.4"
 bzip2              = "0.6"
 tokio-stream       = "0.1.18"
 rpki               = { version = "0.19.2", features = ["crypto", "rtr"] }
+rustls             = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+tokio-rustls       = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rustls-pemfile     = "2"
+rcgen              = { version = "0.13", default-features = false, features = ["ring"] }
 futures-util       = "0.3"
 micromap           = "0.1.0"
 paste              = "1.0.15"

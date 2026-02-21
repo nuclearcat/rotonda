@@ -72,6 +72,19 @@ impl BmpTcpOutStatusReporter {
     pub fn internal_error<T: Display>(&self, err: T) {
         sr_log!(error: self, "Internal error: {}", err);
     }
+
+    pub fn tls_handshake_error<T: Display>(&self, client_addr: SocketAddr, err: T) {
+        sr_log!(warn: self, "TLS handshake failed for {}: {}", client_addr, err);
+        self.metrics.tls_handshake_failures.fetch_add(1, SeqCst);
+    }
+
+    pub fn tls_enabled(&self, listen_addr: &str, is_self_signed: bool) {
+        if is_self_signed {
+            sr_log!(info: self, "TLS enabled on {} with auto-generated self-signed certificate", listen_addr);
+        } else {
+            sr_log!(info: self, "TLS enabled on {} with user-provided certificate", listen_addr);
+        }
+    }
 }
 
 impl UnitStatusReporter for BmpTcpOutStatusReporter {}

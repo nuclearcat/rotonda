@@ -60,6 +60,11 @@ impl BmpTcpOutStatusReporter {
         self.metrics.buffer_overflows.fetch_add(1, SeqCst);
     }
 
+    pub fn acl_rejected(&self, client_addr: SocketAddr) {
+        sr_log!(warn: self, "ACL rejected connection from {}", client_addr);
+        self.metrics.acl_rejected.fetch_add(1, SeqCst);
+    }
+
     pub fn listener_io_error<T: Display>(&self, err: T) {
         sr_log!(warn: self, "Error while listening for connections: {}", err);
     }

@@ -43,6 +43,7 @@ use crate::units::Unit;
 use super::peer_config::{CombinedConfig, ConfigExt};
 use super::unit::BgpTcpIn;
 use super::unit::RotoFunc;
+use super::unit::SESSION_ID_COUNTER;
 
 #[async_trait::async_trait]
 trait BgpSession<C: BgpConfig + ConfigExt> {
@@ -155,11 +156,14 @@ impl Processor {
     ) -> (T, mpsc::Receiver<Message>) {
         let peer_addr_cfg = session.config().remote_prefix_or_exact();
 
-        let mut rejected = false;
         let mut connection_id = DefaultHasher::new();
         session.connected_addr().hash(&mut connection_id);
 
         let session_ingress_id = self.ingress_id;
+
+        // Assigned when SessionNegotiated is received; used in cleanup to
+        // avoid removing a replacement session's live_sessions entry.
+        let mut my_session_id: Option<u64> = None;
 
         // XXX is this all OK cancel-safety-wise?
         loop {
@@ -403,19 +407,43 @@ impl Processor {
                         }
                         Some(Message::SessionNegotiated(negotiated)) => {
                             let key = (negotiated.remote_addr(), negotiated.remote_asn());
-                            if live_sessions.lock().unwrap().contains_key(&key) {
-                                error!("Already got a session for {:?}", key);
-                                let _ = self.tx.send(Command::Disconnect(
-                                        DisconnectReason::ConnectionRejected
+                            let sid = SESSION_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            my_session_id = Some(sid);
+
+                            // --- BGP Session Collision Resolution ---
+                            // RFC 4271 Section 6.8 permits replacing an Established
+                            // session when allowed via configuration. As a passive-only
+                            // BGP speaker, a new incoming connection from the same
+                            // (IP, ASN) is strong evidence that the peer restarted.
+                            // We replace the old (likely stale) session rather than
+                            // rejecting the new one.
+                            //
+                            // The old session receives a Cease NOTIFICATION. Ideally
+                            // this would use subcode 7 (Connection Collision Resolution,
+                            // RFC 4486 Section 4), but routecore's DisconnectReason
+                            // lacks that variant, so we use ConnectionRejected
+                            // (subcode 5) as the closest match.
+                            let old_cmd_tx = {
+                                let mut ls = live_sessions.lock().unwrap();
+                                ls.remove(&key).map(|(_id, tx, _pdu)| tx)
+                            };
+                            if let Some(old_tx) = old_cmd_tx {
+                                warn!(
+                                    "Replacing existing session for {:?} — \
+                                     peer likely restarted (RFC 4271 §6.8)",
+                                    key
+                                );
+                                let _ = old_tx.send(Command::Disconnect(
+                                    DisconnectReason::ConnectionRejected
                                 )).await;
-                                rejected = true;
-                                break;
                             }
+
+                            // Insert the new session
                             {
                             let mut live_sessions = live_sessions.lock().unwrap();
                             live_sessions.insert(
-                                (negotiated.remote_addr(), negotiated.remote_asn()),
-                                (self.tx.clone(), self.pdu_out_tx.clone())
+                                key,
+                                (sid, self.tx.clone(), self.pdu_out_tx.clone())
                             );
                             debug!(
                                 "inserted into live_sessions (current count: {})",
@@ -460,33 +488,36 @@ impl Processor {
             }
         }
 
-        // Done, for whatever reason. Remove ourselves form the live sessions.
-        // But only if this was not an 'early reject' case, because we would
-        // wrongfully remove the firstly inserted (IpAddr, Asn) (i.e., an
-        // earlier session, not the currently rejected one) from the
-        // live_sessions set.
-        if !rejected {
-            if let Some(negotiated) = session.negotiated() {
-                live_sessions.lock().unwrap().remove(&(
-                    negotiated.remote_addr(),
-                    negotiated.remote_asn(),
-                ));
+        // Done, for whatever reason. Remove ourselves from the live sessions.
+        // Only remove if this is still our session entry — a newer session
+        // may have replaced us via collision resolution (RFC 4271 §6.8).
+        let should_withdraw = if let (Some(sid), Some(negotiated)) = (my_session_id, session.negotiated()) {
+            let key = (negotiated.remote_addr(), negotiated.remote_asn());
+            let mut ls = live_sessions.lock().unwrap();
+            if ls.get(&key).map(|(id, _, _)| *id) == Some(sid) {
+                ls.remove(&key);
                 debug!(
                     "removed {}@{} from live_sessions (current count: {})",
                     negotiated.remote_asn(),
                     negotiated.remote_addr(),
-                    live_sessions.lock().unwrap().len()
+                    ls.len()
                 );
-
                 self.ingresses.update_info(session_ingress_id,
                     ingress::IngressInfo::new()
                     .with_state(IngressState::Disconnected)
                 );
-
-                self.gate
-                    .update_data(Update::Withdraw(session_ingress_id, None))
-                    .await;
+                true
+            } else {
+                false
             }
+        } else {
+            false
+        };
+
+        if should_withdraw {
+            self.gate
+                .update_data(Update::Withdraw(session_ingress_id, None))
+                .await;
         }
 
         (session, rx_sess)

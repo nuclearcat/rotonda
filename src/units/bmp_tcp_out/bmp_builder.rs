@@ -360,8 +360,9 @@ fn build_bgp_update(
 
     let is_ipv4 = prefix.is_v4();
 
-    // Get raw path attributes, filtering out types 14 and 15
-    let pa_bytes = filter_raw_path_attributes(pamap);
+    // Get raw path attributes (filtering out types 14 and 15) and the
+    // original next hop from MP_REACH_NLRI if present.
+    let (pa_bytes, orig_next_hop) = filter_raw_path_attributes(pamap);
 
     if is_ipv4 {
         // For IPv4: put prefix in NLRI field
@@ -381,8 +382,11 @@ fn build_bgp_update(
 
         buf
     } else {
-        // For IPv6: add MP_REACH_NLRI (type 14)
-        let mp_reach = build_mp_reach_nlri(prefix);
+        // For IPv6: add MP_REACH_NLRI (type 14) with the original next hop
+        let mp_reach = build_mp_reach_nlri(
+            prefix,
+            orig_next_hop.as_deref(),
+        );
         let total_pa_len = pa_bytes.len() + mp_reach.len();
 
         let update_body_len = 2 + 2 + total_pa_len;
@@ -406,14 +410,18 @@ fn build_bgp_update(
 ///
 /// RotondaPaMap stores raw bytes as: [RpkiInfo(1), PduParseInfo(1), pa_blob...]
 /// The pa_blob is a sequence of BGP path attributes in wire format.
-fn filter_raw_path_attributes(pamap: &RotondaPaMap) -> Vec<u8> {
+///
+/// Returns the filtered path attributes and, if found, the next hop bytes
+/// extracted from the original MP_REACH_NLRI (type 14).
+fn filter_raw_path_attributes(pamap: &RotondaPaMap) -> (Vec<u8>, Option<Vec<u8>>) {
     let raw = pamap.as_ref();
     if raw.len() < 2 {
-        return Vec::new();
+        return (Vec::new(), None);
     }
 
     let pa_blob = &raw[2..];
     let mut result = Vec::with_capacity(pa_blob.len());
+    let mut next_hop = None;
     let mut pos = 0;
 
     while pos < pa_blob.len() {
@@ -447,15 +455,26 @@ fn filter_raw_path_attributes(pamap: &RotondaPaMap) -> Vec<u8> {
             break;
         }
 
-        // Skip MP_REACH_NLRI (14) and MP_UNREACH_NLRI (15)
-        if type_code != 14 && type_code != 15 {
+        if type_code == 14 {
+            // MP_REACH_NLRI: extract the next hop before discarding.
+            // Wire format of the value: AFI(2) + SAFI(1) + NH_LEN(1) + NH(NH_LEN) + ...
+            let value_start = pos + header_len;
+            let value = &pa_blob[value_start..pos + total_attr_len];
+            if value.len() >= 4 {
+                let nh_len = value[3] as usize;
+                if value.len() >= 4 + nh_len {
+                    next_hop = Some(value[4..4 + nh_len].to_vec());
+                }
+            }
+        } else if type_code != 15 {
+            // Keep everything except MP_REACH_NLRI (14) and MP_UNREACH_NLRI (15)
             result.extend_from_slice(&pa_blob[pos..pos + total_attr_len]);
         }
 
         pos += total_attr_len;
     }
 
-    result
+    (result, next_hop)
 }
 
 /// Build a BGP UPDATE withdrawal message.
@@ -558,17 +577,30 @@ fn build_eor_mp_unreach(peer: &PeerInfo, afisafi: AfiSafiType) -> Vec<u8> {
     buf
 }
 
-/// Build MP_REACH_NLRI path attribute for IPv6.
-fn build_mp_reach_nlri(prefix: Prefix) -> Vec<u8> {
+/// Build MP_REACH_NLRI path attribute.
+///
+/// `next_hop` is the raw next hop bytes extracted from the original
+/// MP_REACH_NLRI. If not available, falls back to a zeroed next hop
+/// of the appropriate length (4 for IPv4, 16 for IPv6).
+fn build_mp_reach_nlri(prefix: Prefix, next_hop: Option<&[u8]>) -> Vec<u8> {
     let nlri_bytes = encode_prefix_nlri(prefix);
 
     let afi: u16 = if prefix.is_v4() { 1 } else { 2 };
     let safi: u8 = 1; // Unicast
-    let next_hop = [0u8; 16];
-    let next_hop_len: u8 = 16;
+
+    let default_nh: Vec<u8>;
+    let nh = match next_hop {
+        Some(nh) => nh,
+        None => {
+            let len = if prefix.is_v4() { 4 } else { 16 };
+            default_nh = vec![0u8; len];
+            &default_nh
+        }
+    };
+    let next_hop_len = nh.len() as u8;
 
     let value_len =
-        2 + 1 + 1 + next_hop.len() + 1 + nlri_bytes.len();
+        2 + 1 + 1 + nh.len() + 1 + nlri_bytes.len();
 
     let mut buf = Vec::new();
     if value_len > 255 {
@@ -584,7 +616,7 @@ fn build_mp_reach_nlri(prefix: Prefix) -> Vec<u8> {
     buf.extend_from_slice(&afi.to_be_bytes());
     buf.push(safi);
     buf.push(next_hop_len);
-    buf.extend_from_slice(&next_hop);
+    buf.extend_from_slice(nh);
     buf.push(0); // Reserved
     buf.extend_from_slice(&nlri_bytes);
 
@@ -719,7 +751,8 @@ mod tests {
     #[test]
     fn test_filter_raw_path_attributes_empty() {
         let pamap = RotondaPaMap::default();
-        let result = filter_raw_path_attributes(&pamap);
+        let (result, next_hop) = filter_raw_path_attributes(&pamap);
         assert!(result.is_empty());
+        assert!(next_hop.is_none());
     }
 }

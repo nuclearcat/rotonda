@@ -513,35 +513,45 @@ fn encode_prefix_nlri(prefix: Prefix) -> Vec<u8> {
     buf
 }
 
-fn build_eor_ipv4(_peer: &PeerInfo) -> Vec<u8> {
-    let total_len = 23;
+fn build_eor_ipv4(peer: &PeerInfo) -> Vec<u8> {
+    // Minimal BGP UPDATE: marker(16) + length(2) + type(1) + withdrawn_len(2) + pa_len(2) = 23
+    let bgp_update_len: usize = 23;
+    let total_len = BMP_COMMON_HEADER_LEN + BMP_PER_PEER_HEADER_LEN + bgp_update_len;
     let mut buf = Vec::with_capacity(total_len);
     write_common_header(&mut buf, BMP_MSG_ROUTE_MONITORING, total_len as u32);
-    write_per_peer_header(
-        &mut buf,
-        &_peer
-    );
+    write_per_peer_header(&mut buf, peer);
+    // BGP UPDATE header
+    buf.extend_from_slice(&BGP_MARKER);
+    buf.extend_from_slice(&(bgp_update_len as u16).to_be_bytes());
+    buf.push(BGP_MSG_UPDATE);
+    // BGP UPDATE body (empty = IPv4 Unicast EoR)
     buf.extend_from_slice(&0u16.to_be_bytes()); // Withdrawn Routes Length = 0
     buf.extend_from_slice(&0u16.to_be_bytes()); // Path Attribute Length = 0
     buf
 }
 
-fn build_eor_mp_unreach(_peer: &PeerInfo, afisafi: AfiSafiType) -> Vec<u8> {
+fn build_eor_mp_unreach(peer: &PeerInfo, afisafi: AfiSafiType) -> Vec<u8> {
     let (afi, safi) = afisafi.into();
 
-    let mut mp_unreach = Vec::with_capacity(3);
+    let mut mp_unreach = Vec::with_capacity(6);
     mp_unreach.push(0x80); // Optional
     mp_unreach.push(15); // MP_UNREACH_NLRI
-    mp_unreach.push(3); // Length
+    mp_unreach.push(3); // Length: AFI(2) + SAFI(1)
     mp_unreach.extend_from_slice(&afi.to_be_bytes());
     mp_unreach.push(safi);
 
     let total_pa_len = mp_unreach.len();
-    let update_body_len = 2 + 2 + total_pa_len;
-    let total_len = 19 + update_body_len;
+    let update_body_len = 2 + 2 + total_pa_len; // withdrawn_len(2) + pa_len(2) + PA data
+    let bgp_update_len = 19 + update_body_len; // BGP header(19) + body
+    let total_len = BMP_COMMON_HEADER_LEN + BMP_PER_PEER_HEADER_LEN + bgp_update_len;
     let mut buf = Vec::with_capacity(total_len);
     write_common_header(&mut buf, BMP_MSG_ROUTE_MONITORING, total_len as u32);
-    write_per_peer_header(&mut buf, _peer);
+    write_per_peer_header(&mut buf, peer);
+    // BGP UPDATE header
+    buf.extend_from_slice(&BGP_MARKER);
+    buf.extend_from_slice(&(bgp_update_len as u16).to_be_bytes());
+    buf.push(BGP_MSG_UPDATE);
+    // BGP UPDATE body
     buf.extend_from_slice(&0u16.to_be_bytes()); // Withdrawn Routes Length = 0
     buf.extend_from_slice(&(total_pa_len as u16).to_be_bytes());
     buf.extend_from_slice(&mp_unreach);

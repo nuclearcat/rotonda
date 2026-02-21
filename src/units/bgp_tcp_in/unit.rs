@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::IpAddr;
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -181,9 +182,11 @@ trait ConfigAcceptor {
     );
 }
 
+pub static SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub type LiveSessions = HashMap<
     (IpAddr, Asn),
-    (mpsc::Sender<Command>, mpsc::Sender<BgpMsg<Bytes>>),
+    (u64, mpsc::Sender<Command>, mpsc::Sender<BgpMsg<Bytes>>),
 >;
 
 //#[derive(Debug)]
@@ -559,7 +562,7 @@ impl DirectUpdate for BgpTcpInRunner {
                 let chans = {
                     self.live_sessions.lock().unwrap().clone().into_values()
                 };
-                for (cmd_tx, pdu_out_tx) in chans {
+                for (_session_id, cmd_tx, pdu_out_tx) in chans {
                     //debug!(
                     //    "emitting Command::RawUpdate, chan cap {}",
                     //    chan.capacity()

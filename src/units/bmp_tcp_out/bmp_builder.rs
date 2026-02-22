@@ -195,6 +195,27 @@ fn build_bgp_open(asn: Asn, is_ipv6: bool) -> Vec<u8> {
         caps.push(1); // SAFI=1
     }
 
+    // Capability: Graceful Restart (code 64) - RFC 4724
+    // This signals that End-of-RIB markers will be sent, which is
+    // required for receivers to detect the end of initial table dump.
+    // Flags: 0x0000 (restart state bit = 0, restart time = 0),
+    // followed by AFI/SAFI entries with forwarding bit = 0.
+    caps.push(64); // Capability code
+    let gr_afi_count = if is_ipv6 { 2 } else { 1 };
+    let gr_len = 2 + gr_afi_count * 4; // 2 (restart flags/time) + 4 per AFI/SAFI entry
+    caps.push(gr_len as u8);
+    caps.extend_from_slice(&0u16.to_be_bytes()); // Restart Flags (4 bits) + Restart Time (12 bits) = 0
+    // IPv4 Unicast with forwarding state not preserved
+    caps.extend_from_slice(&1u16.to_be_bytes()); // AFI=1
+    caps.push(1); // SAFI=1
+    caps.push(0); // Flags for this AFI/SAFI
+    if is_ipv6 {
+        // IPv6 Unicast with forwarding state not preserved
+        caps.extend_from_slice(&2u16.to_be_bytes()); // AFI=2
+        caps.push(1); // SAFI=1
+        caps.push(0); // Flags for this AFI/SAFI
+    }
+
     // Optional Parameters: wrap capabilities in Parameter Type 2
     let mut opt_params = Vec::with_capacity(2 + caps.len());
     opt_params.push(2); // Parameter Type = Capabilities
@@ -754,5 +775,116 @@ mod tests {
         let (result, next_hop) = filter_raw_path_attributes(&pamap);
         assert!(result.is_empty());
         assert!(next_hop.is_none());
+    }
+
+    #[test]
+    fn test_bgp_open_contains_graceful_restart() {
+        // IPv4-only peer
+        let open = build_bgp_open(Asn::from_u32(65000), false);
+        // Find GR capability (code 64) in the capabilities
+        let bgp_body = &open[19..]; // skip marker(16) + length(2) + type(1)
+        let opt_params_len = bgp_body[9] as usize;
+        let opt_params = &bgp_body[10..10 + opt_params_len];
+        // opt_params: type(1) + len(1) + capabilities...
+        assert_eq!(opt_params[0], 2); // Parameter Type = Capabilities
+        let caps = &opt_params[2..];
+        let mut found_gr = false;
+        let mut pos = 0;
+        while pos < caps.len() {
+            let cap_code = caps[pos];
+            let cap_len = caps[pos + 1] as usize;
+            if cap_code == 64 {
+                found_gr = true;
+                // For IPv4-only: 2 (restart flags/time) + 4 (one AFI/SAFI) = 6
+                assert_eq!(cap_len, 6);
+            }
+            pos += 2 + cap_len;
+        }
+        assert!(found_gr, "Graceful Restart capability not found in BGP OPEN");
+
+        // IPv6 peer
+        let open_v6 = build_bgp_open(Asn::from_u32(65000), true);
+        let bgp_body = &open_v6[19..];
+        let opt_params_len = bgp_body[9] as usize;
+        let opt_params = &bgp_body[10..10 + opt_params_len];
+        let caps = &opt_params[2..];
+        let mut pos = 0;
+        while pos < caps.len() {
+            let cap_code = caps[pos];
+            let cap_len = caps[pos + 1] as usize;
+            if cap_code == 64 {
+                // For IPv6: 2 (restart flags/time) + 4*2 (two AFI/SAFIs) = 10
+                assert_eq!(cap_len, 10);
+            }
+            pos += 2 + cap_len;
+        }
+    }
+
+    #[test]
+    fn test_eor_ipv4_is_valid_bgp_update() {
+        let peer = PeerInfo {
+            peer_type: PeerType::GlobalInstance,
+            peer_flags: 0x40,
+            peer_distinguisher: [0u8; 8],
+            peer_address: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            peer_asn: Asn::from_u32(65000),
+            peer_bgp_id: [0u8; 4],
+        };
+
+        let msg = build_eor_ipv4(&peer);
+        let total_len = BMP_COMMON_HEADER_LEN + BMP_PER_PEER_HEADER_LEN + 23;
+        assert_eq!(msg.len(), total_len);
+
+        // Verify the BGP UPDATE portion
+        let bgp_offset = BMP_COMMON_HEADER_LEN + BMP_PER_PEER_HEADER_LEN;
+        let bgp_msg = &msg[bgp_offset..];
+        // Marker: 16 bytes of 0xFF
+        assert_eq!(&bgp_msg[..16], &[0xFF; 16]);
+        // Length: 23
+        let bgp_len = u16::from_be_bytes([bgp_msg[16], bgp_msg[17]]);
+        assert_eq!(bgp_len, 23);
+        // Type: UPDATE
+        assert_eq!(bgp_msg[18], BGP_MSG_UPDATE);
+        // Withdrawn Routes Length: 0
+        assert_eq!(u16::from_be_bytes([bgp_msg[19], bgp_msg[20]]), 0);
+        // Path Attribute Length: 0
+        assert_eq!(u16::from_be_bytes([bgp_msg[21], bgp_msg[22]]), 0);
+    }
+
+    #[test]
+    fn test_eor_ipv6_has_mp_unreach_nlri() {
+        let peer = PeerInfo {
+            peer_type: PeerType::GlobalInstance,
+            peer_flags: 0xC0, // V + L flags
+            peer_distinguisher: [0u8; 8],
+            peer_address: IpAddr::V6(std::net::Ipv6Addr::new(
+                0x2001, 0xdb8, 0, 0, 0, 0, 0, 1,
+            )),
+            peer_asn: Asn::from_u32(65000),
+            peer_bgp_id: [0u8; 4],
+        };
+
+        let msg = build_eor_mp_unreach(&peer, AfiSafiType::Ipv6Unicast);
+
+        // Verify the BGP UPDATE portion
+        let bgp_offset = BMP_COMMON_HEADER_LEN + BMP_PER_PEER_HEADER_LEN;
+        let bgp_msg = &msg[bgp_offset..];
+        // Marker
+        assert_eq!(&bgp_msg[..16], &[0xFF; 16]);
+        // Type: UPDATE
+        assert_eq!(bgp_msg[18], BGP_MSG_UPDATE);
+        // Withdrawn Routes Length: 0
+        assert_eq!(u16::from_be_bytes([bgp_msg[19], bgp_msg[20]]), 0);
+        // Path Attribute Length
+        let pa_len = u16::from_be_bytes([bgp_msg[21], bgp_msg[22]]) as usize;
+        assert_eq!(pa_len, 6); // MP_UNREACH_NLRI: flags(1) + type(1) + len(1) + AFI(2) + SAFI(1)
+        // MP_UNREACH_NLRI attribute
+        assert_eq!(bgp_msg[23], 0x80); // Flags: Optional
+        assert_eq!(bgp_msg[24], 15);   // Type: MP_UNREACH_NLRI
+        assert_eq!(bgp_msg[25], 3);    // Length: AFI(2) + SAFI(1)
+        // AFI = 2 (IPv6)
+        assert_eq!(u16::from_be_bytes([bgp_msg[26], bgp_msg[27]]), 2);
+        // SAFI = 1 (Unicast)
+        assert_eq!(bgp_msg[28], 1);
     }
 }

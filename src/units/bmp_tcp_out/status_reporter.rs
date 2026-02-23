@@ -36,22 +36,22 @@ impl BmpTcpOutStatusReporter {
     }
 
     pub fn client_connected(&self, client_addr: SocketAddr) {
-        sr_log!(debug: self, "BMP client connected from {}", client_addr);
+        sr_log!(info: self, "BMP client connected from {}", client_addr);
         self.metrics.clients_connected.fetch_add(1, SeqCst);
     }
 
     pub fn client_disconnected(&self, client_addr: SocketAddr) {
-        sr_log!(debug: self, "BMP client disconnected: {}", client_addr);
+        sr_log!(info: self, "BMP client disconnected: {}", client_addr);
         self.metrics.clients_disconnected.fetch_add(1, SeqCst);
     }
 
     pub fn dump_started(&self, client_addr: SocketAddr) {
-        sr_log!(debug: self, "Initial table dump started for client {}", client_addr);
+        sr_log!(info: self, "Initial table dump started for client {}", client_addr);
         self.metrics.active_dumps.fetch_add(1, SeqCst);
     }
 
     pub fn dump_completed(&self, client_addr: SocketAddr) {
-        sr_log!(debug: self, "Initial table dump completed for client {}", client_addr);
+        sr_log!(info: self, "Initial table dump completed for client {}", client_addr);
         self.metrics.active_dumps.fetch_sub(1, SeqCst);
     }
 

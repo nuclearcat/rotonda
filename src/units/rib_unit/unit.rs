@@ -546,21 +546,23 @@ impl RibUnitRunner {
                 self.filter_payload([payload] /* insert_fn*/).await?
             }
 
-            Update::WithdrawBulk(ingress_ids) => {
+            Update::WithdrawBulk(ref ingress_ids) => {
                 debug!("got WithdrawBulk for {} ids", ingress_ids.len());
                 ingress_ids
                     .iter()
                     .for_each(|&id| self.signal_withdraw(id, None));
+                self.gate.update_data(update).await;
             }
-            
+
             Update::IngressReappeared(ingress_id) => {
                 debug!("Got IngressReappeared for {ingress_id}");
                 self.rib.load().mark_ingress_active(ingress_id);
-                self.rib.load().mark_ingress_active(ingress_id);
+                self.gate.update_data(update).await;
             }
 
             Update::Withdraw(ingress_id, maybe_afisafi) => {
-                self.signal_withdraw(ingress_id, maybe_afisafi)
+                self.signal_withdraw(ingress_id, maybe_afisafi);
+                self.gate.update_data(update).await;
             }
 
             Update::OutputStream(..) => {

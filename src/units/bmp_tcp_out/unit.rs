@@ -207,6 +207,7 @@ struct BmpTcpOutRunner {
 #[async_trait]
 impl DirectUpdate for BmpTcpOutRunner {
     async fn direct_update(&self, update: Update) {
+        self.metrics.updates_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let clients = self.clients.read().await;
         for (_id, client) in clients.iter() {
             if client.is_dumping().await {

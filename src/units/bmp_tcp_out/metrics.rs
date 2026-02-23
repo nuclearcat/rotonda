@@ -20,6 +20,7 @@ pub struct BmpTcpOutMetrics {
     pub buffer_overflows: Arc<AtomicUsize>,
     pub acl_rejected: Arc<AtomicUsize>,
     pub tls_handshake_failures: Arc<AtomicUsize>,
+    pub updates_received: Arc<AtomicUsize>,
 }
 
 impl GraphStatus for BmpTcpOutMetrics {
@@ -96,6 +97,12 @@ impl BmpTcpOutMetrics {
         MetricType::Counter,
         MetricUnit::Total,
     );
+    const UPDATES_RECEIVED_METRIC: Metric = Metric::new(
+        "bmp_tcp_out_updates_received",
+        "the number of updates received from upstream",
+        MetricType::Counter,
+        MetricUnit::Total,
+    );
 
     pub fn new(gate: &Gate) -> Self {
         Self {
@@ -155,6 +162,11 @@ impl metrics::Source for BmpTcpOutMetrics {
             &Self::TLS_HANDSHAKE_FAILURES_METRIC,
             Some(unit_name),
             self.tls_handshake_failures.load(SeqCst),
+        );
+        target.append_simple(
+            &Self::UPDATES_RECEIVED_METRIC,
+            Some(unit_name),
+            self.updates_received.load(SeqCst),
         );
     }
 }

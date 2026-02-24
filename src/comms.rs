@@ -2003,7 +2003,7 @@ mod tests {
 
         // Build an update to send
         let update =
-            Update::Bulk(smallvec![mk_test_payload(), mk_test_payload()]);
+            Update::Bulk(Box::new(smallvec![mk_test_payload(), mk_test_payload()]));
 
         // Send the update through the gate
         eprintln!("SENDING PAYLOAD");

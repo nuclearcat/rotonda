@@ -215,7 +215,7 @@ pub async fn send_update_to_client(
             send_payload_to_client(client, payload, ingress_register).await
         }
         Update::Bulk(payloads) => {
-            for payload in payloads {
+            for payload in payloads.iter() {
                 if !send_payload_to_client(client, payload, ingress_register).await {
                     return false;
                 }

@@ -473,7 +473,7 @@ impl RouterHandler {
         }
         } // end of lock scope
             
-        self.gate.update_data(Update::OutputStream(osms)).await;
+        self.gate.update_data(Update::OutputStream(Box::new(osms))).await;
         let next_state = match verdict {
             // Default action when no roto script is used
             // is Accept (i.e. None here).

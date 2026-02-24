@@ -357,7 +357,7 @@ impl Processor {
 
                             } // end of lock scope
 
-                            self.gate.update_data(Update::OutputStream(osms)).await;
+                            self.gate.update_data(Update::OutputStream(Box::new(osms))).await;
 
                             match verdict {
                                 // Default action when no roto script is used

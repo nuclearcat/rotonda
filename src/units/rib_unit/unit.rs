@@ -536,7 +536,7 @@ impl RibUnitRunner {
             }
 
             Update::Bulk(payloads) => {
-                self.filter_payload(payloads /* insert_fn*/).await?
+                self.filter_payload(*payloads /* insert_fn*/).await?
             }
 
             Update::Single(payload) => {
@@ -852,7 +852,7 @@ impl RibUnitRunner {
                                                 &mut ctx.output.borrow_mut(),
                                             );
                                             }
-                                            self.gate.update_data(Update::OutputStream(osms)).await;
+                                            self.gate.update_data(Update::OutputStream(Box::new(osms))).await;
 
                                         }
                                     }
@@ -954,7 +954,7 @@ impl RibUnitRunner {
                                                     &mut ctx.output.borrow_mut(),
                                                 );
                                                 }
-                                                self.gate.update_data(Update::OutputStream(osms)).await;
+                                                self.gate.update_data(Update::OutputStream(Box::new(osms))).await;
                                             }
                                         }
                                     }
@@ -1067,7 +1067,7 @@ impl RibUnitRunner {
                 &mut output_stream,
             );
             }
-            self.gate.update_data(Update::OutputStream(osms)).await;
+            self.gate.update_data(Update::OutputStream(Box::new(osms))).await;
         }
 
         match res.len() {
@@ -1080,7 +1080,7 @@ impl RibUnitRunner {
                     .await;
             }
             _ => {
-                self.gate.update_data(Update::Bulk(res)).await;
+                self.gate.update_data(Update::Bulk(Box::new(res))).await;
             }
         }
 

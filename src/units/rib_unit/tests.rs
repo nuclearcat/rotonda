@@ -699,7 +699,7 @@ fn mk_route_update_with_communities(
     for w in wdws {
         bulk.push(Payload::new(w, None, ingress_id, RouteStatus::Withdrawn));
     }
-    Update::Bulk(bulk)
+    Update::Bulk(Box::new(bulk))
 
     /*
     let afi_safi = if prefix.is_v4() { AfiSafiType::Ipv4Unicast } else { AfiSafiType::Ipv6Unicast };

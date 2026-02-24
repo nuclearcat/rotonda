@@ -300,11 +300,10 @@ impl Payload {
 
 //------------ Update --------------------------------------------------------
 
-#[allow(clippy::large_enum_variant)] // FIXME
 #[derive(Clone, Debug)]
 pub enum Update {
     Single(Payload),
-    Bulk(SmallVec<[Payload; 8]>),
+    Bulk(Box<SmallVec<[Payload; 8]>>),
     // Withdraw everything or a particular AFISAFI because the session ended.
     // Not to be used for 'normal' withdrawals.
     Withdraw(IngressId, Option<AfiSafiType>),
@@ -316,7 +315,7 @@ pub enum Update {
     IngressReappeared(IngressId),
     UpstreamStatusChange(UpstreamStatus),
 
-    OutputStream(SmallVec<[OutputStreamMessage; 2]>),
+    OutputStream(Box<SmallVec<[OutputStreamMessage; 2]>>),
     Rtr(crate::units::RtrUpdate),
 }
 
@@ -351,12 +350,12 @@ impl From<Payload> for Update {
 
 impl<const N: usize> From<[Payload; N]> for Update {
     fn from(payloads: [Payload; N]) -> Self {
-        Update::Bulk(payloads.as_slice().into())
+        Update::Bulk(Box::new(payloads.as_slice().into()))
     }
 }
 
 impl From<SmallVec<[Payload; 8]>> for Update {
     fn from(payloads: SmallVec<[Payload; 8]>) -> Self {
-        Update::Bulk(payloads)
+        Update::Bulk(Box::new(payloads))
     }
 }

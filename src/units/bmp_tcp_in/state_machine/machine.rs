@@ -831,7 +831,7 @@ where
                             .routing_update(update_report_msg);
 
                         saved_self
-                            .mk_routing_update_result(Update::Bulk(payloads))
+                            .mk_routing_update_result(Update::Bulk(Box::new(payloads)))
                     } else {
                         return saved_self.mk_invalid_message_result(
                             "Invalid BMP RouteMonitoring BGP UPDATE message. The message cannot be parsed.",

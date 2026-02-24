@@ -178,7 +178,7 @@ async fn publish_msg() {
 
     let test_output_stream_message = mk_roto_output_stream_payload();
 
-    let payload = Update::OutputStream(smallvec::smallvec![test_output_stream_message]);
+    let payload = Update::OutputStream(Box::new(smallvec::smallvec![test_output_stream_message]));
 
 
     runner.direct_update(payload).await;

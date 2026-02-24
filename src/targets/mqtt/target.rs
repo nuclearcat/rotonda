@@ -472,7 +472,7 @@ where
             }
 
             Update::OutputStream(msgs) => {
-                for osm in msgs {
+                for osm in *msgs {
                     if let Some(msg) = self.output_stream_message_to_msg(osm)
                     {
                         if let Err(err) =

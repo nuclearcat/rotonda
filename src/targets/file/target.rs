@@ -179,7 +179,7 @@ impl FileRunner {
 
                     match update {
                         Update::OutputStream(msgs) => {
-                            for m in msgs {
+                            for m in *msgs {
                                 let m = m.into_record();
                                 if let Some(dst) = self.target_file.as_mut() {
                                     if let OutputStreamMessageRecord::Entry(ref e) = m {

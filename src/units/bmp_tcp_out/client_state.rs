@@ -49,8 +49,22 @@ pub struct ClientState {
     /// Number of bytes sent to this client.
     pub bytes_sent: AtomicUsize,
 
-    /// Maximum buffer size during dump phase.
-    pub max_buffer: usize,
+    /// Maximum buffer size during dump phase (grows dynamically based on available RAM).
+    pub max_buffer: AtomicUsize,
+}
+
+const BUFFER_GROWTH_STEP: usize = 50_000;
+const MIN_FREE_RAM_BYTES: u64 = 512 * 1024 * 1024;
+
+fn available_ram_bytes() -> u64 {
+    unsafe {
+        let mut info: libc::sysinfo = std::mem::zeroed();
+        if libc::sysinfo(&mut info) == 0 {
+            (info.freeram as u64) * (info.mem_unit as u64)
+        } else {
+            0
+        }
+    }
 }
 
 impl ClientState {
@@ -69,7 +83,7 @@ impl ClientState {
             connected_at: Utc::now(),
             messages_sent: AtomicUsize::new(0),
             bytes_sent: AtomicUsize::new(0),
-            max_buffer,
+            max_buffer: AtomicUsize::new(max_buffer),
         }
     }
 
@@ -85,10 +99,15 @@ impl ClientState {
 
     /// Buffer an update during dump phase.
     /// Returns false if the buffer is full (client should be disconnected).
+    /// The buffer grows dynamically in 50k increments if >=512MB free RAM is available.
     pub async fn buffer_update(&self, update: Update) -> bool {
         let mut buf = self.dump_buffer.lock().await;
-        if buf.len() >= self.max_buffer {
-            return false;
+        let current_limit = self.max_buffer.load(Ordering::Relaxed);
+        if buf.len() >= current_limit {
+            if available_ram_bytes() < MIN_FREE_RAM_BYTES {
+                return false;
+            }
+            self.max_buffer.store(current_limit + BUFFER_GROWTH_STEP, Ordering::Relaxed);
         }
         buf.push(update);
         true

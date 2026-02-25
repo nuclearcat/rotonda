@@ -25,6 +25,24 @@ use super::{
     status_reporter::BmpTcpOutStatusReporter,
 };
 
+/// Look up the parent (router-level) IngressInfo for a peer and build a
+/// JSON Admin Label string from its sysName/sysDescr.
+fn resolve_admin_label(
+    info: &IngressInfo,
+    ingress_register: &register::Register,
+    forward_router_info: bool,
+) -> Option<String> {
+    if !forward_router_info {
+        return None;
+    }
+    let parent_id = info.parent_ingress?;
+    let parent = ingress_register.get(parent_id)?;
+    bmp_builder::build_admin_label_json(
+        parent.name.as_deref(),
+        parent.desc.as_deref(),
+    )
+}
+
 /// Perform the initial table dump for a newly connected BMP client.
 ///
 /// Uses a two-phase approach for fast dumps with many peers:
@@ -40,6 +58,7 @@ pub async fn perform_initial_dump(
     ingress_register: &Arc<register::Register>,
     sys_name: &str,
     sys_descr: &str,
+    forward_router_info: bool,
     metrics: &Arc<BmpTcpOutMetrics>,
     status_reporter: &Arc<BmpTcpOutStatusReporter>,
 ) -> bool {
@@ -89,7 +108,8 @@ pub async fn perform_initial_dump(
     for peer_entry in &peers {
         let ingress_id = peer_entry.ingress_id;
         let info = &peer_entry.ingress_info;
-        let peer_info = PeerInfo::from_ingress_info(info);
+        let mut peer_info = PeerInfo::from_ingress_info(info);
+        peer_info.admin_label = resolve_admin_label(info, ingress_register, forward_router_info);
 
         // Send Peer Up
         let peer_up_msg = bmp_builder::build_peer_up(&peer_info);
@@ -227,7 +247,7 @@ pub async fn perform_initial_dump(
     );
 
     for update in buffered {
-        if !send_update_to_client(client, &update, ingress_register).await {
+        if !send_update_to_client(client, &update, ingress_register, forward_router_info).await {
             return false;
         }
     }
@@ -246,14 +266,15 @@ pub async fn send_update_to_client(
     client: &Arc<ClientState>,
     update: &Update,
     ingress_register: &Arc<register::Register>,
+    forward_router_info: bool,
 ) -> bool {
     match update {
         Update::Single(payload) => {
-            send_payload_to_client(client, payload, ingress_register).await
+            send_payload_to_client(client, payload, ingress_register, forward_router_info).await
         }
         Update::Bulk(payloads) => {
             for payload in payloads.iter() {
-                if !send_payload_to_client(client, payload, ingress_register).await {
+                if !send_payload_to_client(client, payload, ingress_register, forward_router_info).await {
                     return false;
                 }
             }
@@ -271,7 +292,7 @@ pub async fn send_update_to_client(
             true
         }
         Update::IngressReappeared(ingress_id) => {
-            send_peer_reappeared(client, *ingress_id, ingress_register).await
+            send_peer_reappeared(client, *ingress_id, ingress_register, forward_router_info).await
         }
         _ => {
             // Other update types are ignored for BMP out
@@ -285,13 +306,15 @@ async fn send_payload_to_client(
     client: &Arc<ClientState>,
     payload: &Payload,
     ingress_register: &Arc<register::Register>,
+    forward_router_info: bool,
 ) -> bool {
     let ingress_id = payload.ingress_id;
 
     // Ensure we have sent Peer Up for this peer
     if client.register_known_peer_if_absent(ingress_id).await {
         if let Some(info) = ingress_register.get(ingress_id) {
-            let peer_info = PeerInfo::from_ingress_info(&info);
+            let mut peer_info = PeerInfo::from_ingress_info(&info);
+            peer_info.admin_label = resolve_admin_label(&info, ingress_register, forward_router_info);
             let peer_up = bmp_builder::build_peer_up(&peer_info);
             if !client.send_message(peer_up).await {
                 client.remove_known_peer(ingress_id).await;
@@ -348,9 +371,11 @@ async fn send_peer_reappeared(
     client: &Arc<ClientState>,
     ingress_id: IngressId,
     ingress_register: &Arc<register::Register>,
+    forward_router_info: bool,
 ) -> bool {
     if let Some(info) = ingress_register.get(ingress_id) {
-        let peer_info = PeerInfo::from_ingress_info(&info);
+        let mut peer_info = PeerInfo::from_ingress_info(&info);
+        peer_info.admin_label = resolve_admin_label(&info, ingress_register, forward_router_info);
 
         // Only send Peer Up if this peer was not already known.
         if client.register_known_peer_if_absent(ingress_id).await {

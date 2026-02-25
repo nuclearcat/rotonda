@@ -350,6 +350,29 @@ impl Rib {
         Ok(unicast_res)
     }
 
+    /// Iterate all prefix records in the unicast RIB.
+    /// Each PrefixRecord contains the prefix and all route records (from all peers).
+    /// Note: this includes withdrawn routes; callers should filter by record.status.
+    pub fn iter_all_prefix_records(
+        &self,
+    ) -> Result<Vec<PrefixRecord<RotondaPaMap>>, String> {
+        let guard = &epoch::pin();
+        let store = (*self.unicast)
+            .as_ref()
+            .ok_or(PrefixStoreError::StoreNotReadyError.to_string())?;
+
+        let res: Vec<PrefixRecord<RotondaPaMap>> = store
+            .prefixes_iter(guard)
+            .flatten()
+            .collect();
+
+        debug!(
+            "rib::iter_all_prefix_records: {} prefix records",
+            res.len()
+        );
+        Ok(res)
+    }
+
     pub fn match_ingress_id(
         &self,
         ingress_id: IngressId,

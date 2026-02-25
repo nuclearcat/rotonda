@@ -19,7 +19,7 @@ name = "print_rotonda_std_doc"
 path = "doc/bin/print_rotonda_std_doc.rs"
 
 [workspace.package]
-version = "0.5.4-dev"
+version = "0.5.5-dev"
 edition = "2021"
 rust-version = "1.87"
 authors = ["NLnet Labs <routing-team@nlnetlabs.nl>"]
@@ -104,7 +104,8 @@ reqwest            = { version = "0.12", default-features = false, features = ["
 rumqttd            = { version = "0.20.0", default-features = false }
 
 [profile.release]
-strip = true
+strip = false
+debug = 1
 
 [features]
 default = ["http-api-gzip", "cranelift-jit/selinux-fix"]

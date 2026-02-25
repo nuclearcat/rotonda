@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -26,11 +27,13 @@ use super::{
 
 /// Perform the initial table dump for a newly connected BMP client.
 ///
-/// This sends:
+/// Uses a two-phase approach for fast dumps with many peers:
 /// 1. BMP Initiation Message
-/// 2. For each active peer: Peer Up + all routes from the RIB
-/// 3. Transitions client to Live phase
-/// 4. Drains any buffered updates that arrived during dump
+/// 2. Peer Up for ALL active peers
+/// 3. Single RIB walk sending all routes for all peers (interleaved)
+/// 4. End-of-RIB markers for all peers
+/// 5. Transitions client to Live phase
+/// 6. Drains any buffered updates that arrived during dump
 pub async fn perform_initial_dump(
     client: &Arc<ClientState>,
     rib: &Arc<Rib>,
@@ -75,17 +78,18 @@ pub async fn perform_initial_dump(
         peers.len()
     );
 
-    // 3. For each peer, send Peer Up + routes
+    // 3. Phase 1: Send Peer Up for ALL peers first
     let dump_start = Instant::now();
     let bytes_before_dump = client.bytes_sent.load(Ordering::Relaxed);
-    let mut total_routes: usize = 0;
+
+    // Build a lookup map: IngressId -> PeerInfo for quick access during RIB walk
+    let mut peer_info_map: HashMap<IngressId, PeerInfo> = HashMap::with_capacity(peers.len());
+    let mut known_ingress_ids: HashSet<IngressId> = HashSet::with_capacity(peers.len());
+
     for peer_entry in &peers {
         let ingress_id = peer_entry.ingress_id;
         let info = &peer_entry.ingress_info;
         let peer_info = PeerInfo::from_ingress_info(info);
-
-        let peer_start = Instant::now();
-        let bytes_before_peer = client.bytes_sent.load(Ordering::Relaxed);
 
         // Send Peer Up
         let peer_up_msg = bmp_builder::build_peer_up(&peer_info);
@@ -94,48 +98,92 @@ pub async fn perform_initial_dump(
         }
 
         client.add_known_peer(ingress_id).await;
+        peer_info_map.insert(ingress_id, peer_info);
+        known_ingress_ids.insert(ingress_id);
+    }
 
-        // Query RIB for all routes from this peer
-        let mut peer_route_count: usize = 0;
-        let mut has_ipv4 = false;
-        let mut has_ipv6 = false;
-        match rib.match_ingress_id(ingress_id) {
-            Ok(prefix_records) => {
-                for record in prefix_records {
-                    let prefix = record.prefix;
-                    if prefix.is_v4() {
-                        has_ipv4 = true;
-                    } else {
-                        has_ipv6 = true;
+    info!(
+        "bmp-out dump for {}: sent Peer Up for {} peers in {:.2}s",
+        client.remote_addr,
+        peers.len(),
+        dump_start.elapsed().as_secs_f64(),
+    );
+
+    // 4. Phase 2: Single RIB walk — send all routes for all peers interleaved
+    let rib_walk_start = Instant::now();
+    let mut total_routes: usize = 0;
+    // Track which address families each peer has routes for (for End-of-RIB)
+    let mut peer_has_ipv4: HashSet<IngressId> = HashSet::new();
+    let mut peer_has_ipv6: HashSet<IngressId> = HashSet::new();
+
+    match rib.iter_all_prefix_records() {
+        Ok(prefix_records) => {
+            for prefix_record in prefix_records {
+                let prefix = prefix_record.prefix;
+
+                for route_record in prefix_record.meta {
+                    // Skip withdrawn routes
+                    if route_record.status == RouteStatus::Withdrawn {
+                        continue;
                     }
 
-                    for route_record in record.meta {
-                        let pamap = &route_record.meta;
-                        let msg = bmp_builder::build_route_monitoring(
-                            &peer_info,
-                            prefix,
-                            pamap,
-                            false,
-                        );
-                        peer_route_count += 1;
-                        if !client.send_message(msg).await {
-                            return false;
-                        }
+                    let ingress_id = route_record.multi_uniq_id;
+
+                    // Only send routes for peers we know about
+                    let peer_info = match peer_info_map.get(&ingress_id) {
+                        Some(pi) => pi,
+                        None => continue,
+                    };
+
+                    // Track address families per peer
+                    if prefix.is_v4() {
+                        peer_has_ipv4.insert(ingress_id);
+                    } else {
+                        peer_has_ipv6.insert(ingress_id);
+                    }
+
+                    let pamap = &route_record.meta;
+                    let msg = bmp_builder::build_route_monitoring(
+                        peer_info,
+                        prefix,
+                        pamap,
+                        false,
+                    );
+                    total_routes += 1;
+                    if !client.send_message(msg).await {
+                        return false;
                     }
                 }
             }
-            Err(e) => {
-                warn!(
-                    "Failed to query RIB for ingress_id {}: {}",
-                    ingress_id, e
-                );
-            }
         }
+        Err(e) => {
+            warn!(
+                "bmp-out dump for {}: failed to iterate RIB: {}",
+                client.remote_addr, e
+            );
+        }
+    }
 
-        if has_ipv4 {
+    let rib_walk_elapsed = rib_walk_start.elapsed();
+    info!(
+        "bmp-out dump for {}: RIB walk sent {} routes in {:.2}s",
+        client.remote_addr,
+        total_routes,
+        rib_walk_elapsed.as_secs_f64(),
+    );
+
+    // 5. Phase 3: Send End-of-RIB markers for all peers
+    for peer_entry in &peers {
+        let ingress_id = peer_entry.ingress_id;
+        let peer_info = match peer_info_map.get(&ingress_id) {
+            Some(pi) => pi,
+            None => continue,
+        };
+
+        if peer_has_ipv4.contains(&ingress_id) {
             if let Some(msg) =
                 bmp_builder::build_end_of_rib_marker(
-                    &peer_info,
+                    peer_info,
                     AfiSafiType::Ipv4Unicast,
                 )
             {
@@ -145,10 +193,10 @@ pub async fn perform_initial_dump(
             }
         }
 
-        if has_ipv6 {
+        if peer_has_ipv6.contains(&ingress_id) {
             if let Some(msg) =
                 bmp_builder::build_end_of_rib_marker(
-                    &peer_info,
+                    peer_info,
                     AfiSafiType::Ipv6Unicast,
                 )
             {
@@ -157,17 +205,6 @@ pub async fn perform_initial_dump(
                 }
             }
         }
-        let peer_bytes = client.bytes_sent.load(Ordering::Relaxed) - bytes_before_peer;
-        let peer_elapsed = peer_start.elapsed();
-        info!(
-            "bmp-out dump for {}: peer ingress_id={} sent {} routes, {:.2} MB in {:.2}s",
-            client.remote_addr,
-            ingress_id,
-            peer_route_count,
-            peer_bytes as f64 / (1024.0 * 1024.0),
-            peer_elapsed.as_secs_f64(),
-        );
-        total_routes += peer_route_count;
     }
 
     let dump_bytes = client.bytes_sent.load(Ordering::Relaxed) - bytes_before_dump;

@@ -15,6 +15,7 @@ rib_unit = "rib"
 sys_name = "rotonda-bmp-out"
 sys_descr = "Rotonda BMP restreamer"
 max_client_buffer = 100000
+forward_router_info = true
 acl = ["0.0.0.0/0", "::/0"]
 
 # Optional TLS
@@ -34,6 +35,7 @@ tls_key = "/path/to/key.pem"
 | `sys_descr` | no | `"Rotonda BMP restreamer"` | Value sent in the BMP Initiation Message sysDescr TLV. |
 | `max_client_buffer` | no | `100000` | Maximum number of updates buffered per client during the initial dump phase. If exceeded, the client is disconnected. See [Buffer Overflow](#buffer-overflow) below. |
 | `acl` | yes | — | List of allowed client IP addresses or CIDR prefixes. Use `["0.0.0.0/0", "::/0"]` to allow all. |
+| `forward_router_info` | no | `true` | Include upstream router identity (sysName/sysDescr) as a JSON Admin Label TLV (type 4, RFC 9736) in Peer Up messages. |
 | `tls` | no | `false` | Enable TLS encryption for client connections. |
 | `tls_cert` | no | — | Path to PEM certificate file. If omitted with `tls = true`, a self-signed certificate is generated. |
 | `tls_key` | no | — | Path to PEM private key file. Required if `tls_cert` is set. |
@@ -88,6 +90,88 @@ When the buffer exceeds `max_client_buffer`, the client is **disconnected**. The
 - If buffer overflows persist even with a larger buffer, the root cause is
   usually that the dump is too slow relative to the update rate. Consider
   whether the consuming application can keep up with the data rate.
+
+### Admin Label TLV (Upstream Router Identity)
+
+When `forward_router_info = true` (the default), each Peer Up Notification
+includes an **Admin Label TLV** (type 4, as defined in RFC 9736). The value is
+a JSON object carrying the upstream BMP router's `sysName` and `sysDescr` that
+were received via the BMP Initiation Message on the `bmp-tcp-in` side.
+
+This allows downstream BMP consumers to identify which upstream router each
+peer belongs to, even when rotonda multiplexes multiple routers into a single
+BMP session.
+
+Fields whose value is a placeholder (`"no-sysname"` / `"no-sysdesc"`) or empty
+are omitted from the JSON. If both fields are absent, the TLV is not included.
+
+Set `forward_router_info = false` to disable the TLV entirely.
+
+#### Wire Format Specification for Downstream Implementors
+
+The TLV appears **after** the two BGP OPEN messages inside the BMP Peer Up
+Notification (message type 3), as permitted by RFC 9736 Section 4.
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|         Type = 4              |            Length              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                         Value (UTF-8 JSON)                    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+- **Type** (2 bytes, big-endian): `0x0004` — Admin Label (RFC 9736 Section 4.4).
+- **Length** (2 bytes, big-endian): byte length of the Value field.
+- **Value**: UTF-8 encoded JSON object.
+
+#### JSON Schema
+
+```json
+{
+  "sysName":  "<string>",
+  "sysDescr": "<string>"
+}
+```
+
+Both keys are optional. At least one will be present when the TLV is included.
+Values are JSON-escaped (e.g. `\"`, `\\`, `\n`). Downstream parsers should
+tolerate unknown keys for forward compatibility.
+
+#### Parsing Algorithm
+
+To extract the Admin Label from a Peer Up Notification:
+
+1. Parse the BMP Common Header (6 bytes) — verify message type = 3.
+2. Skip the Per-Peer Header (42 bytes).
+3. Skip Local Address (16 bytes), Local Port (2 bytes), Remote Port (2 bytes).
+4. Parse the Sent OPEN message: read its BGP length field (bytes 16–17 of
+   the BGP message, big-endian) and skip that many bytes total.
+5. Parse the Received OPEN message the same way.
+6. Any remaining bytes are TLVs. For each TLV:
+   - Read Type (2 bytes) and Length (2 bytes), both big-endian.
+   - If Type = 4, the next Length bytes are the Admin Label JSON.
+   - Otherwise skip Length bytes (unknown TLV — ignore).
+
+#### Examples
+
+Full Peer Up with Admin Label (both fields):
+```
+Type: 0x0004  Length: 0x002E
+Value: {"sysName":"edge-rtr01","sysDescr":"Cisco IOS XR 7.9.1"}
+```
+
+Only sysName present:
+```
+Type: 0x0004  Length: 0x001A
+Value: {"sysName":"edge-rtr01"}
+```
+
+No Admin Label TLV is present when:
+- `forward_router_info = false` in config, or
+- The upstream BMP router did not send sysName/sysDescr in its Initiation
+  Message, or sent only placeholder values.
 
 ## Prometheus Metrics
 

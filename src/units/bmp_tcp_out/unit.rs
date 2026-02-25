@@ -83,6 +83,11 @@ pub struct BmpTcpOut {
     ///   acl = ["192.168.1.1", "fd00::1"]           # restrict to exact IPs
     pub acl: Vec<PrefixOrExact>,
 
+    /// Include upstream router identity (sysName/sysDescr) as a JSON Admin
+    /// Label TLV (type 4, RFC 9736) in Peer Up messages. Default: true.
+    #[serde(default = "BmpTcpOut::default_forward_router_info")]
+    pub forward_router_info: bool,
+
     /// Enable TLS encryption for client connections. Default: false.
     #[serde(default)]
     pub tls: bool,
@@ -148,6 +153,7 @@ impl BmpTcpOut {
             self.sys_name,
             self.sys_descr,
             self.max_client_buffer,
+            self.forward_router_info,
             self.acl,
             self.tls,
             self.tls_cert,
@@ -180,6 +186,10 @@ impl BmpTcpOut {
     fn default_max_client_buffer() -> usize {
         100_000
     }
+
+    fn default_forward_router_info() -> bool {
+        true
+    }
 }
 
 //-------- BmpTcpOutRunner ---------------------------------------------------
@@ -193,6 +203,7 @@ struct BmpTcpOutRunner {
     sys_name: String,
     sys_descr: String,
     max_client_buffer: usize,
+    forward_router_info: bool,
     acl: Vec<PrefixOrExact>,
     tls: bool,
     tls_cert: Option<String>,
@@ -224,6 +235,7 @@ impl DirectUpdate for BmpTcpOutRunner {
                     client,
                     &update,
                     &self.ingress_register,
+                    self.forward_router_info,
                 )
                 .await
                 {
@@ -253,6 +265,7 @@ impl BmpTcpOutRunner {
         sys_name: String,
         sys_descr: String,
         max_client_buffer: usize,
+        forward_router_info: bool,
         acl: Vec<PrefixOrExact>,
         tls: bool,
         tls_cert: Option<String>,
@@ -268,6 +281,7 @@ impl BmpTcpOutRunner {
             sys_name,
             sys_descr,
             max_client_buffer,
+            forward_router_info,
             acl,
             tls,
             tls_cert,
@@ -496,6 +510,7 @@ impl BmpTcpOutRunner {
         let ingress_register = self.ingress_register.clone();
         let sys_name = self.sys_name.clone();
         let sys_descr = self.sys_descr.clone();
+        let forward_router_info = self.forward_router_info;
         let metrics_for_dump = self.metrics.clone();
         let status_reporter_for_dump = self.status_reporter.clone();
 
@@ -531,6 +546,7 @@ impl BmpTcpOutRunner {
                         &ingress_register,
                         &sys_name,
                         &sys_descr,
+                        forward_router_info,
                         &metrics_for_dump,
                         &status_reporter_for_dump,
                     )

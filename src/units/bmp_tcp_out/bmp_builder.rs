@@ -36,6 +36,9 @@ const BMP_INIT_TLV_SYS_NAME: u16 = 2;
 // BMP Termination TLV types
 const BMP_TERM_TLV_REASON: u16 = 0;
 
+// BMP Peer Up TLV types (RFC 9736)
+const BMP_PEER_UP_TLV_ADMIN_LABEL: u16 = 4;
+
 // BMP Peer Down reason codes
 const BMP_PEER_DOWN_REASON_REMOTE_NO_NOTIFICATION: u8 = 4;
 
@@ -56,6 +59,7 @@ pub struct PeerInfo {
     pub peer_address: IpAddr,
     pub peer_asn: Asn,
     pub peer_bgp_id: [u8; 4],
+    pub admin_label: Option<String>,
 }
 
 impl PeerInfo {
@@ -83,6 +87,7 @@ impl PeerInfo {
             peer_address,
             peer_asn,
             peer_bgp_id: [0u8; 4],
+            admin_label: None,
         }
     }
 }
@@ -246,15 +251,81 @@ fn build_bgp_open(asn: Asn, is_ipv6: bool) -> Vec<u8> {
     buf
 }
 
+/// Escape a string for JSON: handle `"`, `\`, and control characters.
+fn escape_json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Build a JSON Admin Label string from upstream router name/description.
+///
+/// Filters out placeholder values ("no-sysname", "no-sysdesc") that some
+/// BMP implementations send when the real value is unavailable. Returns
+/// `None` if both fields are absent or placeholder.
+pub fn build_admin_label_json(
+    name: Option<&str>,
+    desc: Option<&str>,
+) -> Option<String> {
+    let name = name.filter(|s| *s != "no-sysname" && !s.is_empty());
+    let desc = desc.filter(|s| *s != "no-sysdesc" && !s.is_empty());
+
+    if name.is_none() && desc.is_none() {
+        return None;
+    }
+
+    let mut json = String::from("{");
+    let mut first = true;
+
+    if let Some(n) = name {
+        json.push_str(&format!("\"sysName\":\"{}\"", escape_json_string(n)));
+        first = false;
+    }
+
+    if let Some(d) = desc {
+        if !first {
+            json.push(',');
+        }
+        json.push_str(&format!("\"sysDescr\":\"{}\"", escape_json_string(d)));
+    }
+
+    json.push('}');
+    Some(json)
+}
+
 /// Build a BMP Peer Up Notification message.
 pub fn build_peer_up(peer: &PeerInfo) -> Vec<u8> {
     let sent_open =
         build_bgp_open(peer.peer_asn, peer.peer_address.is_ipv6());
     let received_open =
         build_bgp_open(peer.peer_asn, peer.peer_address.is_ipv6());
+    let max_tlv_len = u16::MAX as usize;
+
+    let admin_label = peer
+        .admin_label
+        .as_ref()
+        .filter(|label| label.len() <= max_tlv_len);
+
+    // Admin Label TLV: Type(2) + Length(2) + Value
+    let admin_label_tlv_len = match &admin_label {
+        Some(label) => 4 + label.len(),
+        None => 0,
+    };
 
     let peer_up_body_len =
-        16 + 2 + 2 + sent_open.len() + received_open.len();
+        16 + 2 + 2 + sent_open.len() + received_open.len() + admin_label_tlv_len;
     let total_len =
         BMP_COMMON_HEADER_LEN + BMP_PER_PEER_HEADER_LEN + peer_up_body_len;
 
@@ -272,6 +343,13 @@ pub fn build_peer_up(peer: &PeerInfo) -> Vec<u8> {
     buf.extend_from_slice(&sent_open);
     // Received OPEN
     buf.extend_from_slice(&received_open);
+
+    // Admin Label TLV (type 4, RFC 9736)
+    if let Some(label) = &admin_label {
+        buf.extend_from_slice(&BMP_PEER_UP_TLV_ADMIN_LABEL.to_be_bytes());
+        buf.extend_from_slice(&(label.len() as u16).to_be_bytes());
+        buf.extend_from_slice(label.as_bytes());
+    }
 
     buf
 }
@@ -708,6 +786,7 @@ mod tests {
             peer_address: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
             peer_asn: Asn::from_u32(65000),
             peer_bgp_id: [0u8; 4],
+            admin_label: None,
         };
 
         let msg = build_peer_up(&peer);
@@ -729,6 +808,7 @@ mod tests {
             peer_address: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
             peer_asn: Asn::from_u32(65000),
             peer_bgp_id: [0u8; 4],
+            admin_label: None,
         };
 
         let msg = build_peer_down(&peer);
@@ -829,6 +909,7 @@ mod tests {
             peer_address: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
             peer_asn: Asn::from_u32(65000),
             peer_bgp_id: [0u8; 4],
+            admin_label: None,
         };
 
         let msg = build_eor_ipv4(&peer);
@@ -862,6 +943,7 @@ mod tests {
             )),
             peer_asn: Asn::from_u32(65000),
             peer_bgp_id: [0u8; 4],
+            admin_label: None,
         };
 
         let msg = build_eor_mp_unreach(&peer, AfiSafiType::Ipv6Unicast);
@@ -886,5 +968,86 @@ mod tests {
         assert_eq!(u16::from_be_bytes([bgp_msg[26], bgp_msg[27]]), 2);
         // SAFI = 1 (Unicast)
         assert_eq!(bgp_msg[28], 1);
+    }
+
+    #[test]
+    fn test_escape_json_string() {
+        assert_eq!(escape_json_string("hello"), "hello");
+        assert_eq!(escape_json_string(r#"say "hi""#), r#"say \"hi\""#);
+        assert_eq!(escape_json_string("back\\slash"), "back\\\\slash");
+        assert_eq!(escape_json_string("line\nbreak"), "line\\nbreak");
+        assert_eq!(escape_json_string("tab\there"), "tab\\there");
+        assert_eq!(escape_json_string("cr\rhere"), "cr\\rhere");
+        // Control character (bell)
+        assert_eq!(escape_json_string("bell\x07"), "bell\\u0007");
+    }
+
+    #[test]
+    fn test_build_admin_label_json() {
+        // Both present
+        let json = build_admin_label_json(Some("router1"), Some("Cisco IOS"));
+        assert_eq!(
+            json.unwrap(),
+            r#"{"sysName":"router1","sysDescr":"Cisco IOS"}"#
+        );
+
+        // Only name
+        let json = build_admin_label_json(Some("router1"), None);
+        assert_eq!(json.unwrap(), r#"{"sysName":"router1"}"#);
+
+        // Only desc
+        let json = build_admin_label_json(None, Some("Cisco IOS"));
+        assert_eq!(json.unwrap(), r#"{"sysDescr":"Cisco IOS"}"#);
+
+        // Both absent
+        assert!(build_admin_label_json(None, None).is_none());
+
+        // Placeholder values filtered
+        assert!(build_admin_label_json(Some("no-sysname"), Some("no-sysdesc")).is_none());
+
+        // Name with special characters
+        let json = build_admin_label_json(Some(r#"rtr "A""#), None);
+        assert_eq!(json.unwrap(), r#"{"sysName":"rtr \"A\""}"#);
+    }
+
+    #[test]
+    fn test_build_peer_up_with_admin_label() {
+        let peer = PeerInfo {
+            peer_type: PeerType::GlobalInstance,
+            peer_flags: 0x40,
+            peer_distinguisher: [0u8; 8],
+            peer_address: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            peer_asn: Asn::from_u32(65000),
+            peer_bgp_id: [0u8; 4],
+            admin_label: Some(r#"{"sysName":"router1"}"#.to_string()),
+        };
+
+        let msg = build_peer_up(&peer);
+
+        assert_eq!(msg[0], 3); // Version
+        assert_eq!(msg[5], 3); // Type = Peer Up
+
+        let len = u32::from_be_bytes([msg[1], msg[2], msg[3], msg[4]]);
+        assert_eq!(len as usize, msg.len());
+
+        // Find the Admin Label TLV at the end of the message.
+        // The TLV value is the JSON string.
+        let label = r#"{"sysName":"router1"}"#;
+        let tlv_offset = msg.len() - 4 - label.len();
+        // Type = 4
+        assert_eq!(
+            u16::from_be_bytes([msg[tlv_offset], msg[tlv_offset + 1]]),
+            4
+        );
+        // Length
+        assert_eq!(
+            u16::from_be_bytes([msg[tlv_offset + 2], msg[tlv_offset + 3]]),
+            label.len() as u16
+        );
+        // Value
+        assert_eq!(
+            &msg[tlv_offset + 4..],
+            label.as_bytes()
+        );
     }
 }

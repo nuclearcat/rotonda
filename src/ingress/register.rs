@@ -348,6 +348,33 @@ impl Register {
         Ok(())
     }
 
+    /// Remove an ingress entry from the register
+    ///
+    /// Returns the [`IngressInfo`] if the entry existed, `None` otherwise.
+    pub fn remove(&self, id: IngressId) -> Option<IngressInfo> {
+        self.info.write().unwrap().remove(&id)
+    }
+
+    /// Search for an existing BGP session by remote address, ASN, and ingress type
+    ///
+    /// Unlike [`find_existing_peer`], this does not require `parent_ingress`
+    /// (which BGP sessions don't have). It matches on `remote_addr`,
+    /// `remote_asn`, and `ingress_type`.
+    pub fn find_existing_bgp_session(
+        &self,
+        query: &IngressInfo
+    ) -> Option<(IngressId, IngressInfo)> {
+        let lock = self.info.read().unwrap();
+        for (id, info) in lock.iter() {
+            if find_existing_for!(info, query,
+                {remote_addr, remote_asn, ingress_type},
+            ) {
+                    return Some((*id, info.clone()))
+            }
+        }
+        None
+    }
+
     /// Find all [`IngressId`]s that are children of the given `parent`
     ///
     /// This is used in cases where for example a BMP session (the parent) is
@@ -608,6 +635,81 @@ mod tests {
             res.find_existing_peer(&query1),
             None,
         );
+    }
+
+    #[test]
+    fn remove_existing() {
+        let res = Register::new();
+        let id = res.register();
+        let info = IngressInfo::new()
+            .with_local_asn(Asn::from_u32(65536));
+        res.update_info(id, info.clone());
+        assert!(res.get(id).is_some());
+
+        let removed = res.remove(id);
+        assert_eq!(removed, Some(info));
+        assert!(res.get(id).is_none());
+    }
+
+    #[test]
+    fn remove_nonexistent() {
+        let res = Register::new();
+        assert_eq!(res.remove(999), None);
+    }
+
+    #[test]
+    fn find_existing_bgp_session_match() {
+        let res = Register::new();
+        let id = res.register();
+        let info = IngressInfo::new()
+            .with_remote_addr("10.0.0.1".parse::<IpAddr>().unwrap())
+            .with_remote_asn(Asn::from_u32(65000))
+            .with_ingress_type(IngressType::Bgp);
+        res.update_info(id, info.clone());
+
+        let query = IngressInfo::new()
+            .with_remote_addr("10.0.0.1".parse::<IpAddr>().unwrap())
+            .with_remote_asn(Asn::from_u32(65000))
+            .with_ingress_type(IngressType::Bgp);
+
+        let found = res.find_existing_bgp_session(&query);
+        assert_eq!(found, Some((id, info)));
+    }
+
+    #[test]
+    fn find_existing_bgp_session_no_match_different_asn() {
+        let res = Register::new();
+        let id = res.register();
+        let info = IngressInfo::new()
+            .with_remote_addr("10.0.0.1".parse::<IpAddr>().unwrap())
+            .with_remote_asn(Asn::from_u32(65000))
+            .with_ingress_type(IngressType::Bgp);
+        res.update_info(id, info);
+
+        let query = IngressInfo::new()
+            .with_remote_addr("10.0.0.1".parse::<IpAddr>().unwrap())
+            .with_remote_asn(Asn::from_u32(65001))
+            .with_ingress_type(IngressType::Bgp);
+
+        assert_eq!(res.find_existing_bgp_session(&query), None);
+    }
+
+    #[test]
+    fn find_existing_bgp_session_no_match_different_type() {
+        let res = Register::new();
+        let id = res.register();
+        let info = IngressInfo::new()
+            .with_remote_addr("10.0.0.1".parse::<IpAddr>().unwrap())
+            .with_remote_asn(Asn::from_u32(65000))
+            .with_ingress_type(IngressType::Bmp);
+        res.update_info(id, info);
+
+        let query = IngressInfo::new()
+            .with_remote_addr("10.0.0.1".parse::<IpAddr>().unwrap())
+            .with_remote_asn(Asn::from_u32(65000))
+            .with_ingress_type(IngressType::Bgp);
+
+        assert_eq!(res.find_existing_bgp_session(&query), None);
     }
 
     #[test]

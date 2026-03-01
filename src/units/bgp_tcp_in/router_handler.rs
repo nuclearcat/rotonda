@@ -167,7 +167,7 @@ impl Processor {
         let mut connection_id = DefaultHasher::new();
         session.connected_addr().hash(&mut connection_id);
 
-        let session_ingress_id = self.ingress_id;
+        let mut session_ingress_id = self.ingress_id;
 
         // Assigned when SessionNegotiated is received; used in cleanup to
         // avoid removing a replacement session's live_sessions entry.
@@ -418,6 +418,33 @@ impl Processor {
                             let sid = SESSION_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             my_session_id = Some(sid);
 
+                            // --- Ingress reuse ---
+                            // Check if there's an existing ingress entry for this
+                            // (remote_addr, remote_asn, IngressType::Bgp) combination.
+                            // If so, reuse that ingress ID and withdraw stale routes
+                            // from the previous session. This prevents ingress register
+                            // leaks on peer reconnections.
+                            let query = ingress::IngressInfo::new()
+                                .with_remote_addr(negotiated.remote_addr())
+                                .with_remote_asn(negotiated.remote_asn())
+                                .with_ingress_type(ingress::IngressType::Bgp);
+
+                            if let Some((existing_id, _existing_info)) =
+                                self.ingresses.find_existing_bgp_session(&query)
+                            {
+                                debug!(
+                                    "Reusing existing ingress {} for {:?}",
+                                    existing_id, key
+                                );
+                                session_ingress_id = existing_id;
+                                // Withdraw stale routes from the previous session.
+                                // This also triggers PeerDown in BMP-out, cleaning
+                                // known_peers. Fresh routes will follow.
+                                self.gate
+                                    .update_data(Update::Withdraw(existing_id, None))
+                                    .await;
+                            }
+
                             // --- BGP Session Collision Resolution ---
                             // RFC 4271 Section 6.8 permits replacing an Established
                             // session when allowed via configuration. As a passive-only
@@ -435,7 +462,7 @@ impl Processor {
                                 let mut ls = live_sessions.lock().unwrap();
                                 ls.remove(&key)
                             };
-                            if let Some((_id, old_abort, old_tx, _pdu)) = old_entry {
+                            if let Some((_id, old_abort, old_tx, _pdu, old_ingress_id)) = old_entry {
                                 warn!(
                                     "Replacing existing session for {:?} — \
                                      peer likely restarted (RFC 4271 §6.8)",
@@ -448,6 +475,15 @@ impl Processor {
                                     DisconnectReason::ConnectionRejected
                                 )).await;
                                 old_abort.abort();
+
+                                // If the old session had a different ingress ID
+                                // (rare, but possible), withdraw and remove it.
+                                if old_ingress_id != session_ingress_id {
+                                    self.gate
+                                        .update_data(Update::Withdraw(old_ingress_id, None))
+                                        .await;
+                                    self.ingresses.remove(old_ingress_id);
+                                }
                             }
 
                             // Insert the new session with our abort handle
@@ -458,22 +494,18 @@ impl Processor {
                             let mut live_sessions = live_sessions.lock().unwrap();
                             live_sessions.insert(
                                 key,
-                                (sid, my_abort, self.tx.clone(), self.pdu_out_tx.clone())
+                                (sid, my_abort, self.tx.clone(), self.pdu_out_tx.clone(), session_ingress_id)
                             );
                             debug!(
                                 "inserted into live_sessions (current count: {})",
                                 live_sessions.len()
                             );
                             }
-                            // register ingress
-                            //session_ingress_id = self.ingresses.register();
 
                             debug!(
                                 "got assigned {} for this session",
                                 session_ingress_id
                             );
-                            debug!("get: {:?}", self.ingresses.get(session_ingress_id));
-                            
                             self.ingresses.update_info(
                                 session_ingress_id,
                                 ingress::IngressInfo::new()
@@ -492,9 +524,6 @@ impl Processor {
                                         .to_vec()
                                     )
                                 );
-                            debug!("get 2: {:?}", self.ingresses.get(session_ingress_id));
-
-
 
                         }
                         Some(Message::Attributes(_)) => unimplemented!(),
@@ -509,7 +538,7 @@ impl Processor {
         let should_withdraw = if let (Some(sid), Some(negotiated)) = (my_session_id, session.negotiated()) {
             let key = (negotiated.remote_addr(), negotiated.remote_asn());
             let mut ls = live_sessions.lock().unwrap();
-            if ls.get(&key).map(|(id, _, _, _)| *id) == Some(sid) {
+            if ls.get(&key).map(|(id, _, _, _, _)| *id) == Some(sid) {
                 ls.remove(&key);
                 debug!(
                     "removed {}@{} from live_sessions (current count: {})",
@@ -533,6 +562,8 @@ impl Processor {
             self.gate
                 .update_data(Update::Withdraw(session_ingress_id, None))
                 .await;
+            // Clean up the ingress register entry so it doesn't leak.
+            self.ingresses.remove(session_ingress_id);
         }
 
         (session, rx_sess)

@@ -187,7 +187,7 @@ pub static SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub type LiveSessions = HashMap<
     (IpAddr, Asn),
-    (u64, AbortHandle, mpsc::Sender<Command>, mpsc::Sender<BgpMsg<Bytes>>),
+    (u64, AbortHandle, mpsc::Sender<Command>, mpsc::Sender<BgpMsg<Bytes>>, ingress::IngressId),
 >;
 
 //#[derive(Debug)]
@@ -376,8 +376,10 @@ impl BgpTcpInRunner {
                                 child_status_reporter,
                                 arc_self.live_sessions.clone(),
                                 arc_self.ingresses.clone(),
-                                // XXX we need to do a find_existing_peer here instead of blindly
-                                // doing a .register().
+                                // Tentative register() — the real find_existing check
+                                // happens at SessionNegotiated time in router_handler,
+                                // where we know the remote ASN and can reuse an
+                                // existing ingress ID if the peer reconnected.
                                 arc_self.ingresses.register(),
                             );
                         } else {
@@ -563,7 +565,7 @@ impl DirectUpdate for BgpTcpInRunner {
                 let chans = {
                     self.live_sessions.lock().unwrap().clone().into_values()
                 };
-                for (_session_id, _abort, cmd_tx, pdu_out_tx) in chans {
+                for (_session_id, _abort, cmd_tx, pdu_out_tx, _ingress_id) in chans {
                     //debug!(
                     //    "emitting Command::RawUpdate, chan cap {}",
                     //    chan.capacity()

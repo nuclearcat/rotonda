@@ -979,7 +979,7 @@ where
             peer_id: PeerId::new(pph.address(), pph.asn()),
             peer_bgp_id: pph.bgp_id().into(),
             peer_distuingisher: <[u8; 8]>::try_from(pph.distinguisher()).unwrap(),
-            peer_rib_type: PeerRibType::from((pph.is_post_policy(), pph.adj_rib_type())),
+            peer_rib_type: PeerRibType::from((pph.is_post_policy(), pph.rib_type())),
             connection_id: self.source_id.socket_addr(),
         };
 

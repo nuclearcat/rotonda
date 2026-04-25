@@ -30,7 +30,7 @@ use crate::config::ConfigPath;
 use crate::roto_runtime::types::{explode_announcements, explode_withdrawals};
 use crate::common::unit::UnitActivity;
 use crate::comms::{GateStatus, Terminated};
-use crate::ingress::{self, IngressId, IngressInfo};
+use crate::ingress::{self, IngressId, IngressInfo, IngressType};
 use crate::manager::{Component, WaitPoint};
 use crate::payload::{Payload, RotondaPaMap, RotondaRoute, Update};
 use crate::units::{Gate, Unit};
@@ -210,6 +210,7 @@ impl MrtInRunner {
                         .with_parent_ingress(parent_id)
                         .with_remote_addr(msg.peer_addr())
                         .with_remote_asn(msg.peer_asn())
+                        .with_ingress_type(IngressType::Mrt)
                 ;
 
                 let ingress_id = if let Some((id, _info)) =
@@ -330,7 +331,8 @@ impl MrtInRunner {
                         .with_parent_ingress(parent_id)
                         .with_remote_addr(peer_entry.addr)
                         .with_remote_asn(peer_entry.asn)
-                        .with_filename(filename.clone()),
+                        .with_filename(filename.clone())
+                        .with_ingress_type(IngressType::Mrt),
                 );
                 ingress_map.push(id);
             }

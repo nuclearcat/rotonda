@@ -522,10 +522,10 @@ impl BmpTcpOutRunner {
                 let rib = match http_ng_api.lock() {
                     Ok(api) => {
                         let state = api.cloned_api_state();
-                        let r = state.store.get().cloned();
+                        let r = state.store.load_full();
                         if r.is_none() {
                             warn!(
-                                "RIB OnceLock not set for client {} dump",
+                                "RIB not set for client {} dump",
                                 client_addr
                             );
                         }

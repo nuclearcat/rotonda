@@ -70,10 +70,10 @@ pub async fn perform_initial_dump(
         return false;
     }
 
-    // 2. Find active BGP peers (both BgpViaBmp and Bgp types)
+    // 2. Find active BGP peers (BgpViaBmp, Bgp, and Mrt-replayed types)
     let peers = {
         let mut all_peers = Vec::new();
-        for ingress_type in [IngressType::BgpViaBmp, IngressType::Bgp] {
+        for ingress_type in [IngressType::BgpViaBmp, IngressType::Bgp, IngressType::Mrt] {
             let type_name = format!("{:?}", ingress_type);
             let filter = QueryFilter {
                 ingress_type: Some(ingress_type),

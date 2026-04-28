@@ -133,6 +133,13 @@ pub struct PeerState {
     pub peer_details: PeerDetails,
 
     pub ingress_id: ingress::IngressId,
+
+    /// True if this entry was synthesized by the rib_type/policy-flag
+    /// workaround in `route_monitoring()` (no exact-PPH PeerUp was
+    /// observed). Such entries must be cleaned up on PeerDown for the
+    /// original peer, otherwise their ingress and any routes stored
+    /// under it leak.
+    pub synthesized: bool,
 }
 
 impl std::fmt::Debug for PeerState {
@@ -415,6 +422,19 @@ pub trait PeerAware {
         pph: &PerPeerHeader<Bytes>,
     ) -> Option<PeerState>;
 
+    /// Remove every remaining PeerState whose peer identity matches
+    /// `pph` (same peer_type/distinguisher/address/asn/bgp_id, only the
+    /// peer flags differ). Used by `peer_down` to reap any siblings of
+    /// the just-removed entry — synthesized clones produced by the
+    /// rib_type/policy-flag workaround in `route_monitoring()`, or, if
+    /// the PeerDown carries a synthesized PPH itself, the original
+    /// non-synthesized sibling. The exact-match entry must already be
+    /// removed via `remove_peer` before calling this.
+    fn remove_peer_identity_siblings(
+        &mut self,
+        pph: &PerPeerHeader<Bytes>,
+    ) -> Vec<PeerState>;
+
     fn update_peer_config(
         &mut self,
         pph: &PerPeerHeader<Bytes>,
@@ -553,6 +573,18 @@ where
         //let withdrawals = vec![];
 
         if let Some(removed_peer) = self.details.remove_peer(&pph) {
+            // Reap any sibling PeerState that shares this peer's
+            // identity. The rib_type/policy-flag workaround in
+            // route_monitoring() can create entries keyed on a
+            // synthesized post-policy PPH alongside the original
+            // pre-policy PPH (or vice versa). Whichever flavor of PPH
+            // the PeerDown carries, every view of this logical peer
+            // must come down — otherwise FSM map entries leak,
+            // ingress_ids leak in the global register, and routes
+            // stored under those ingresses are never withdrawn.
+            let identity_siblings =
+                self.details.remove_peer_identity_siblings(&pph);
+
             self.status_reporter.routing_update(UpdateReportMessage {
                 router_id: self.router_id.clone(),
                 n_new_prefixes: 0,        // no new prefixes
@@ -573,14 +605,46 @@ where
             self.status_reporter
                 .peer_down(self.router_id.clone(), eor_capable);
 
-            //if withdrawals.is_empty() {
-            //    self.mk_other_result()
-            //} else {
-            //self.mk_routing_update_result(Update::Bulk(withdrawals))
-            self.mk_routing_update_result(Update::Withdraw(
-                removed_peer.ingress_id,
-                None,
-            ))
+            // Build the WithdrawBulk and clean up the global ingress
+            // register. Synthesized ingresses are dropped so they
+            // don't accumulate across peer flaps; the original
+            // (non-synthesized) ingress is preserved so the next
+            // PeerUp can rebind it via find_existing_peer. For
+            // synthesized entries we snapshot the IngressInfo inline
+            // so downstream consumers (BMP out) can build a Peer Down
+            // with the correct PPH instead of falling back to
+            // IngressInfo::default() once the register entry is gone.
+            let entry_for = |peer: &PeerState,
+                             register: &Arc<ingress::Register>|
+             -> (ingress::IngressId, Option<ingress::IngressInfo>) {
+                if peer.synthesized {
+                    (peer.ingress_id, register.remove(peer.ingress_id))
+                } else {
+                    (peer.ingress_id, None)
+                }
+            };
+
+            let removed_entry = entry_for(&removed_peer, &self.ingress_register);
+            let sibling_entries: Vec<
+                (ingress::IngressId, Option<ingress::IngressInfo>),
+            > = identity_siblings
+                .iter()
+                .map(|s| entry_for(s, &self.ingress_register))
+                .collect();
+
+            if sibling_entries.is_empty() && !removed_peer.synthesized {
+                self.mk_routing_update_result(Update::Withdraw(
+                    removed_peer.ingress_id,
+                    None,
+                ))
+            } else {
+                let mut entries = SmallVec::<
+                    [(ingress::IngressId, Option<ingress::IngressInfo>); 8],
+                >::new();
+                entries.push(removed_entry);
+                entries.extend(sibling_entries);
+                self.mk_routing_update_result(Update::WithdrawBulk(entries))
+            }
 
             /*
             ProcessingResult::new(
@@ -1280,6 +1344,7 @@ impl PeerAware for PeerStates {
                     peer_id: PeerId::new(pph.address(), pph.asn()),
                 },
                 ingress_id: peer_ingress_id,
+                synthesized: false,
             }
         });
         (added, existing_peer_ingress_id)
@@ -1330,12 +1395,33 @@ impl PeerAware for PeerStates {
     ) -> bool {
         let mut peer_state = self.0.get(source_pph).unwrap().clone();
         peer_state.ingress_id = ingress_id;
+        peer_state.synthesized = true;
         if let Some(_existing) = self.0.insert(dst_pph.clone(), peer_state) {
             warn!("Unexpected existing PeerState while trying to add_cloned_peer_config");
             false
         } else {
             true
         }
+    }
+
+    fn remove_peer_identity_siblings(
+        &mut self,
+        pph: &PerPeerHeader<Bytes>,
+    ) -> Vec<PeerState> {
+        let keys: Vec<PerPeerHeader<Bytes>> = self.0
+            .iter()
+            .filter(|(k, _v)| {
+                k.peer_type() == pph.peer_type()
+                    && k.distinguisher() == pph.distinguisher()
+                    && k.address() == pph.address()
+                    && k.asn() == pph.asn()
+                    && k.bgp_id() == pph.bgp_id()
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| self.0.remove(&k))
+            .collect()
     }
 
 

@@ -285,19 +285,22 @@ impl BmpStateDetails<Dumping> {
         //sessions monitored by this BMP connection. The store will then take
         //care of marking all previously learned routes as withdrawn.
 
-        let mut ids = SmallVec::<[ingress::IngressId; 8]>::new();
+        let mut entries = SmallVec::<
+            [(ingress::IngressId, Option<ingress::IngressInfo>); 8],
+        >::new();
         for pph in self.details.get_peers() {
             if let Some(id) = self.details.get_peer_ingress_id(pph) {
-                ids.push(id);
+                let info = self.ingress_register.get(id);
+                entries.push((id, info));
             }
         }
 
         let next_state = BmpState::Terminated(self.into());
 
-        if ids.is_empty() {
+        if entries.is_empty() {
             Self::mk_state_transition_result(BmpStateIdx::Dumping, next_state)
         } else {
-            let update = Update::WithdrawBulk(ids);
+            let update = Update::WithdrawBulk(entries);
 
             Self::mk_final_routing_update_result(next_state, update)
         }
@@ -434,6 +437,13 @@ impl PeerAware for Dumping {
         pph: &PerPeerHeader<Bytes>,
     ) -> Option<PeerState> {
         self.peer_states.remove_peer(pph)
+    }
+
+    fn remove_peer_identity_siblings(
+        &mut self,
+        pph: &PerPeerHeader<Bytes>,
+    ) -> Vec<PeerState> {
+        self.peer_states.remove_peer_identity_siblings(pph)
     }
 
     fn is_peer_eor_capable(

@@ -8,7 +8,7 @@ use serde::{Serialize, Serializer};
 use smallvec::{smallvec, SmallVec};
 use std::fmt;
 
-use crate::ingress::{self, IngressId};
+use crate::ingress::{self, IngressId, IngressInfo};
 use crate::roto_runtime::types::OutputStreamMessage;
 use crate::units::rib_unit::rpki::RpkiInfo;
 use crate::units::rib_unit::QueryFilter;
@@ -310,7 +310,15 @@ pub enum Update {
     // Withdraw everything for multiple sessions. This is used when a BMP
     // connection goes down and everything for the monitored sessions has to
     // be marked Withdrawn.
-    WithdrawBulk(SmallVec<[IngressId; 8]>),
+    //
+    // Each entry optionally carries an `IngressInfo` snapshot taken at emit
+    // time. Consumers building Peer Down messages should prefer the inline
+    // info when present, because the producer may be about to drop the entry
+    // from the global ingress register (e.g. for synthesized peers in
+    // bmp_tcp_in's peer_down workaround). The lookup-after-remove race would
+    // otherwise yield `IngressInfo::default()` and a Peer Down with a wrong
+    // PPH. Producers that don't need to carry info can pass `None`.
+    WithdrawBulk(SmallVec<[(IngressId, Option<IngressInfo>); 8]>),
     // Used to signal the RibUnit a MUI should be set to active again.
     IngressReappeared(IngressId),
     UpstreamStatusChange(UpstreamStatus),

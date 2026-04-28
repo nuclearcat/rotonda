@@ -301,8 +301,13 @@ impl RouterHandler {
             session_ids.len(),
             ingress_register.current_serial(),
         );
+        let entries: smallvec::SmallVec<[(ingress::IngressId, Option<ingress::IngressInfo>); 8]> =
+            session_ids
+                .into_iter()
+                .map(|id| (id, ingress_register.get(id)))
+                .collect();
         self.gate
-            .update_data(Update::WithdrawBulk(session_ids.into()))
+            .update_data(Update::WithdrawBulk(entries))
             .await;
 
         // Signal withdrawal of all address families for this ingress_id.

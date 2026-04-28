@@ -546,11 +546,11 @@ impl RibUnitRunner {
                 self.filter_payload([payload] /* insert_fn*/).await?
             }
 
-            Update::WithdrawBulk(ref ingress_ids) => {
-                debug!("got WithdrawBulk for {} ids", ingress_ids.len());
-                ingress_ids
+            Update::WithdrawBulk(ref entries) => {
+                debug!("got WithdrawBulk for {} ids", entries.len());
+                entries
                     .iter()
-                    .for_each(|&id| self.signal_withdraw(id, None));
+                    .for_each(|(id, _info)| self.signal_withdraw(*id, None));
                 self.gate.update_data(update).await;
             }
 

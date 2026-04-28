@@ -281,11 +281,11 @@ pub async fn send_update_to_client(
             true
         }
         Update::Withdraw(ingress_id, _afisafi) => {
-            send_peer_down(client, *ingress_id, ingress_register).await
+            send_peer_down(client, *ingress_id, None, ingress_register).await
         }
-        Update::WithdrawBulk(ingress_ids) => {
-            for &ingress_id in ingress_ids {
-                if !send_peer_down(client, ingress_id, ingress_register).await {
+        Update::WithdrawBulk(entries) => {
+            for (ingress_id, info) in entries {
+                if !send_peer_down(client, *ingress_id, info.as_ref(), ingress_register).await {
                     return false;
                 }
             }
@@ -343,19 +343,31 @@ async fn send_payload_to_client(
 }
 
 /// Send a Peer Down notification for an ingress.
+///
+/// `snapshot_info` is preferred when present: producers that are about to
+/// drop the entry from `ingress_register` (e.g. `bmp_tcp_in::peer_down`
+/// reaping synthesized siblings) snapshot the info inline on
+/// `Update::WithdrawBulk` so the lookup-after-remove race can't yield a
+/// Peer Down with `IngressInfo::default()`.
 async fn send_peer_down(
     client: &Arc<ClientState>,
     ingress_id: IngressId,
+    snapshot_info: Option<&IngressInfo>,
     ingress_register: &Arc<register::Register>,
 ) -> bool {
     if !client.has_known_peer(ingress_id).await {
         return true; // Client doesn't know about this peer, nothing to do
     }
 
-    let info = ingress_register.get(ingress_id);
-    let peer_info = match info {
-        Some(ref info) => PeerInfo::from_ingress_info(info),
-        None => PeerInfo::from_ingress_info(&IngressInfo::default()),
+    let fetched = if snapshot_info.is_none() {
+        ingress_register.get(ingress_id)
+    } else {
+        None
+    };
+    let peer_info = match (snapshot_info, fetched.as_ref()) {
+        (Some(info), _) => PeerInfo::from_ingress_info(info),
+        (None, Some(info)) => PeerInfo::from_ingress_info(info),
+        (None, None) => PeerInfo::from_ingress_info(&IngressInfo::default()),
     };
 
     let msg = bmp_builder::build_peer_down(&peer_info);

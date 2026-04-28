@@ -133,6 +133,13 @@ pub struct PeerState {
     pub peer_details: PeerDetails,
 
     pub ingress_id: ingress::IngressId,
+
+    /// True if this entry was synthesized by the rib_type/policy-flag
+    /// workaround in `route_monitoring()` (no exact-PPH PeerUp was
+    /// observed). Such entries must be cleaned up on PeerDown for the
+    /// original peer, otherwise their ingress and any routes stored
+    /// under it leak.
+    pub synthesized: bool,
 }
 
 impl std::fmt::Debug for PeerState {
@@ -415,6 +422,16 @@ pub trait PeerAware {
         pph: &PerPeerHeader<Bytes>,
     ) -> Option<PeerState>;
 
+    /// Remove every synthesized PeerState whose peer identity matches
+    /// `pph` (same peer_type/distinguisher/address/asn/bgp_id, only the
+    /// peer flags differ). These are clones produced by the
+    /// rib_type/policy-flag workaround in `route_monitoring()` and must
+    /// be cleaned up alongside the original on PeerDown.
+    fn remove_synthesized_siblings(
+        &mut self,
+        pph: &PerPeerHeader<Bytes>,
+    ) -> Vec<PeerState>;
+
     fn update_peer_config(
         &mut self,
         pph: &PerPeerHeader<Bytes>,
@@ -553,6 +570,14 @@ where
         //let withdrawals = vec![];
 
         if let Some(removed_peer) = self.details.remove_peer(&pph) {
+            // Also reap any synthesized siblings created by the
+            // rib_type/policy-flag workaround in route_monitoring().
+            // Otherwise their PeerState entries leak in the FSM map,
+            // their ingress_ids leak in the global ingress register,
+            // and any routes they hold in the RIB are never withdrawn.
+            let synthesized_siblings =
+                self.details.remove_synthesized_siblings(&pph);
+
             self.status_reporter.routing_update(UpdateReportMessage {
                 router_id: self.router_id.clone(),
                 n_new_prefixes: 0,        // no new prefixes
@@ -573,14 +598,28 @@ where
             self.status_reporter
                 .peer_down(self.router_id.clone(), eor_capable);
 
-            //if withdrawals.is_empty() {
-            //    self.mk_other_result()
-            //} else {
-            //self.mk_routing_update_result(Update::Bulk(withdrawals))
-            self.mk_routing_update_result(Update::Withdraw(
-                removed_peer.ingress_id,
-                None,
-            ))
+            // Drop synthesized ingresses from the global register so we
+            // don't accumulate stale entries across peer flaps. The
+            // original ingress is reused on the next PeerUp via
+            // find_existing_peer, so leave it alone.
+            for sibling in &synthesized_siblings {
+                self.ingress_register.remove(sibling.ingress_id);
+            }
+
+            if synthesized_siblings.is_empty() {
+                self.mk_routing_update_result(Update::Withdraw(
+                    removed_peer.ingress_id,
+                    None,
+                ))
+            } else {
+                let mut ids =
+                    SmallVec::<[ingress::IngressId; 8]>::new();
+                ids.push(removed_peer.ingress_id);
+                ids.extend(
+                    synthesized_siblings.iter().map(|s| s.ingress_id),
+                );
+                self.mk_routing_update_result(Update::WithdrawBulk(ids))
+            }
 
             /*
             ProcessingResult::new(
@@ -1280,6 +1319,7 @@ impl PeerAware for PeerStates {
                     peer_id: PeerId::new(pph.address(), pph.asn()),
                 },
                 ingress_id: peer_ingress_id,
+                synthesized: false,
             }
         });
         (added, existing_peer_ingress_id)
@@ -1330,12 +1370,34 @@ impl PeerAware for PeerStates {
     ) -> bool {
         let mut peer_state = self.0.get(source_pph).unwrap().clone();
         peer_state.ingress_id = ingress_id;
+        peer_state.synthesized = true;
         if let Some(_existing) = self.0.insert(dst_pph.clone(), peer_state) {
             warn!("Unexpected existing PeerState while trying to add_cloned_peer_config");
             false
         } else {
             true
         }
+    }
+
+    fn remove_synthesized_siblings(
+        &mut self,
+        pph: &PerPeerHeader<Bytes>,
+    ) -> Vec<PeerState> {
+        let keys: Vec<PerPeerHeader<Bytes>> = self.0
+            .iter()
+            .filter(|(k, v)| {
+                v.synthesized
+                    && k.peer_type() == pph.peer_type()
+                    && k.distinguisher() == pph.distinguisher()
+                    && k.address() == pph.address()
+                    && k.asn() == pph.asn()
+                    && k.bgp_id() == pph.bgp_id()
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| self.0.remove(&k))
+            .collect()
     }
 
 

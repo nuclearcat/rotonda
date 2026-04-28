@@ -436,6 +436,13 @@ impl PeerAware for Dumping {
         self.peer_states.remove_peer(pph)
     }
 
+    fn remove_synthesized_siblings(
+        &mut self,
+        pph: &PerPeerHeader<Bytes>,
+    ) -> Vec<PeerState> {
+        self.peer_states.remove_synthesized_siblings(pph)
+    }
+
     fn is_peer_eor_capable(
         &self,
         pph: &PerPeerHeader<Bytes>,

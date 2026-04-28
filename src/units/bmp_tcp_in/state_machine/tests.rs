@@ -372,6 +372,136 @@ fn peer_up_route_monitoring_peer_down() {
     //                                    ^ all peers are down
 }
 
+// Regression test for the synthesis-on-route-monitoring workaround.
+//
+// Some BMP exporters send PeerUp with peer-flags = 0 (Adj-RIB-In
+// Pre-policy) but then send RouteMonitoring with the L bit set
+// (Adj-RIB-In Post-policy) for the same peer, without a separate
+// PeerUp. `route_monitoring()` covers this by synthesizing a clone
+// PeerState keyed on the post-policy PPH and registering a fresh
+// ingress for it.
+//
+// Before the fix, `peer_down()` only removed the entry that exactly
+// matched the PeerDown's PPH, so the synthesized sibling leaked: its
+// PeerState stayed in the FSM map, its ingress stayed in the global
+// register, and any routes stored under that ingress were never
+// withdrawn. This test asserts that PeerDown reaps the synthesized
+// sibling, deregisters the synthesized ingress, and emits a
+// `WithdrawBulk` containing both ingress_ids.
+#[test]
+fn peer_down_cleans_up_synthesized_siblings() {
+    let processor = mk_test_processor();
+    let initiation_msg_buf =
+        mk_initiation_msg(TEST_ROUTER_SYS_NAME, TEST_ROUTER_SYS_DESC);
+    let (pph_pre, peer_up_msg_buf, real_pph_pre) =
+        mk_peer_up_notification_msg_without_rfc4724_support(
+            "127.0.0.1",
+            12345,
+        );
+
+    // Identical PPH except for the L bit (post-policy). This forces
+    // the synthesis branch in route_monitoring().
+    let mut pph_post = mk_per_peer_header("127.0.0.1", 12345);
+    pph_post.peer_flags = 0x40;
+    let route_mon_post_msg_buf = mk_route_monitoring_msg(&pph_post);
+
+    let peer_down_msg_buf = mk_peer_down_notification_msg(&pph_pre);
+
+    let processor = processor
+        .process_msg(Instant::now(), initiation_msg_buf, None)
+        .next_state;
+    let processor = processor
+        .process_msg(Instant::now(), peer_up_msg_buf, None)
+        .next_state;
+
+    // After PeerUp the genuine entry exists. Capture its ingress_id.
+    let original_ingress_id = if let BmpState::Dumping(p) = &processor {
+        assert_eq!(p.details.peer_states.get_peers().count(), 1);
+        p.details
+            .peer_states
+            .get_peer_ingress_id(&real_pph_pre)
+            .expect("ingress for genuine peer")
+    } else {
+        unreachable!("expected Dumping after PeerUp");
+    };
+
+    // Post-policy RouteMonitoring triggers synthesis: a second
+    // PeerState appears keyed on the post-policy PPH, with a fresh
+    // ingress_id registered in the global register.
+    let processor = processor
+        .process_msg(Instant::now(), route_mon_post_msg_buf, None)
+        .next_state;
+
+    let synthesized_ingress_id = if let BmpState::Dumping(p) = &processor {
+        assert_eq!(
+            p.details.peer_states.get_peers().count(),
+            2,
+            "synthesis should add a second PeerState entry"
+        );
+        let ids: Vec<_> = p
+            .details
+            .peer_states
+            .get_peers()
+            .filter_map(|pph| {
+                p.details.peer_states.get_peer_ingress_id(pph)
+            })
+            .collect();
+        let synth = *ids
+            .iter()
+            .find(|id| **id != original_ingress_id)
+            .expect("synthesized ingress_id distinct from original");
+        assert!(
+            p.ingress_register.get(synth).is_some(),
+            "synthesized ingress should be registered"
+        );
+        synth
+    } else {
+        unreachable!("expected Dumping after RouteMonitoring");
+    };
+
+    // PeerDown for the original (pre-policy) PPH must clean up the
+    // genuine entry AND the synthesized sibling.
+    let res =
+        processor.process_msg(Instant::now(), peer_down_msg_buf, None);
+
+    let MessageType::RoutingUpdate { update } = res.message_type else {
+        panic!(
+            "expected RoutingUpdate after PeerDown, got {:?}",
+            res.message_type
+        );
+    };
+    let ids = match update {
+        Update::WithdrawBulk(ids) => ids,
+        other => panic!(
+            "expected WithdrawBulk withdrawing both ingresses, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(ids.len(), 2, "WithdrawBulk should cover both ingresses");
+    assert!(
+        ids.iter().any(|id| *id == original_ingress_id),
+        "WithdrawBulk should include the original ingress_id"
+    );
+    assert!(
+        ids.iter().any(|id| *id == synthesized_ingress_id),
+        "WithdrawBulk should include the synthesized ingress_id"
+    );
+
+    if let BmpState::Dumping(p) = &res.next_state {
+        assert!(
+            p.details.peer_states.is_empty(),
+            "peer_states map should be empty after PeerDown"
+        );
+        assert!(
+            p.ingress_register.get(synthesized_ingress_id).is_none(),
+            "synthesized ingress {} should be deregistered after PeerDown",
+            synthesized_ingress_id
+        );
+    } else {
+        unreachable!("expected Dumping after PeerDown");
+    }
+}
+
 #[test]
 fn peer_down_without_peer_up() {
     // Given
